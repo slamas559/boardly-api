@@ -27,6 +27,9 @@ const imageStorage = new CloudinaryStorage({
     folder: "tutorhub_avatars",
     resource_type: "image",
     allowed_formats: ["jpg", "jpeg", "png", "webp"],
+    transformation: [
+      { width: 500, height: 500, crop: "limit", quality: "auto" }
+    ]
   },
 });
 

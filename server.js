@@ -10,8 +10,11 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*", // update with frontend URL in production
-    methods: ["GET", "POST"]
-  }
+    methods: ["GET", "POST"],
+    credentials: true,
+    transports: ['websocket', 'polling'] // Allow both transports
+  },
+  allowEIO3: true,
 });
 
 socketManager(io);
