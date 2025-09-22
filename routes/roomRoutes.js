@@ -212,14 +212,6 @@ router.put("/:roomId/questions/:questionId", async (req, res) => {
   }
 });
 
-// GET /rooms/:code – fetch room by invite code
-// router.get("/:code", async (req, res) => {
-//   const room = await Room.findOne({ code: req.params.code }).populate("creator", "name avatar _id");
-//   if (!room) return res.status(404).json({ message: "Room not found" });
-
-//   await room.updateActivity();
-//   res.json(room);
-// });
 
 router.get('/:code/public', async (req, res) => {
   try {
@@ -262,47 +254,6 @@ router.get('/:code/public', async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-
-const validatePaidRoomAccess = async (req, res, next) => {
-  try {
-    const { code } = req.params;
-    const userId = req.user._id;
-    
-    const room = await Room.findOne({ code }).populate('creator');
-    
-    if (!room) {
-      return res.status(404).json({ message: 'Room not found' });
-    }
-    
-    // If it's a paid room and user is not the creator
-    if (room.isPaid && room.creator._id.toString() !== userId.toString()) {
-      const participant = room.participants.find(
-        p => p.student.toString() === userId.toString() && p.hasPaid
-      );
-      
-      if (!participant) {
-        return res.status(403).json({ 
-          message: 'Payment required to access this room',
-          requiresPayment: true
-        });
-      }
-      
-      // Check if this user has an active session elsewhere
-      const activeConnection = activeUsers.get(userId.toString());
-      if (activeConnection && activeConnection.roomId === room._id.toString()) {
-        return res.status(409).json({
-          message: 'You are already connected to this room from another device',
-          activeSession: true
-        });
-      }
-    }
-    
-    req.room = room;
-    next();
-  } catch (error) {
-    res.status(500).json({ message: 'Server error' });
-  }
-};
 
 router.get('/:code', protect, async (req, res) => {
   try {

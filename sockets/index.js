@@ -9,120 +9,19 @@ import Room from "../models/Room.js";
 
 const joinedRooms = new Map(); // socket.id -> roomId
 const roomUsers = new Map(); // roomId -> Set of user objects {socketId, userId, name, isTutor}
-export const activeUsers = new Map(); // userId -> {socketId, roomId, timestamp, userAgent, ip}
+export const activeUsers = new Map(); // userId -> {socketId, roomId, timestamp}
 
-// New: Track active sessions per room per user
-const roomUserSessions = new Map(); // `${roomId}-${userId}` -> {socketId, timestamp, userAgent, ip}
 
 export default function socketManager(io) {
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
-    // Periodic cleanup for inactive users
-    const cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      const TIMEOUT = 30 * 60 * 1000; // 30 minutes
-      
-      for (const [userId, connection] of activeUsers.entries()) {
-        if (now - connection.timestamp > TIMEOUT) {
-          activeUsers.delete(userId);
-          // Also cleanup room sessions
-          cleanupUserFromAllRooms(userId);
-        }
-      }
-    }, 5 * 60 * 1000); // Clean up every 5 minutes
-
     socket.on("join-room", async (data) => {
       try {
-        const { roomId, user } = data; // Expecting {roomId, user: {id, name, isTutor}}
-        
-        console.log(`User ${user.id} (${user.name}) attempting to join room ${roomId}`);
-        
-        const sessionKey = `${roomId}-${user.id}`;
-        const existingRoomSession = getUserSessionInRoom(user.id, roomId);
-        const userAgent = socket.handshake.headers['user-agent'] || 'unknown';
-        const userIP = socket.handshake.address || socket.conn.remoteAddress || 'unknown';
-        
-        console.log(`Session key: ${sessionKey}`);
-        console.log(`Existing session found: ${!!existingRoomSession}`);
-        
-        // Check if THIS SAME USER is already active in THIS specific room from a different device
-        if (existingRoomSession) {
-          const existingSocket = io.sockets.sockets.get(existingRoomSession.socketId);
-          
-          console.log(`Existing socket connected: ${existingSocket?.connected}`);
-          
-          if (existingSocket && existingSocket.connected) {
-            // Check if it's the same device/browser (by comparing user agent and IP)
-            const isSameDevice = (
-              existingRoomSession.userAgent === userAgent && 
-              existingRoomSession.ip === userIP
-            );
-            
-            console.log(`Is same device check:`);
-            console.log(`  Existing UA: ${existingRoomSession.userAgent}`);
-            console.log(`  New UA: ${userAgent}`);
-            console.log(`  Existing IP: ${existingRoomSession.ip}`);
-            console.log(`  New IP: ${userIP}`);
-            console.log(`  Same device: ${isSameDevice}`);
-            
-            if (!isSameDevice) {
-              // Same user, different device detected - disconnect the existing session
-              console.log(`🚫 Multi-device access detected for user ${user.id} (${user.name}) in room ${roomId}`);
-              console.log(`  Disconnecting existing session on socket ${existingRoomSession.socketId}`);
-              
-              existingSocket.emit("force-disconnect", {
-                reason: "Multi-device access detected",
-                message: "Your session was ended because you joined this room from another device. Only one device is allowed per user per room session.",
-                code: "MULTI_DEVICE_ACCESS",
-                userId: user.id,
-                roomId: roomId
-              });
-              
-              // Clean up the existing session
-              existingSocket.leave(roomId);
-              removeUserFromRoom(existingRoomSession.socketId, roomId);
-              joinedRooms.delete(existingRoomSession.socketId);
-              roomUserSessions.delete(sessionKey);
-              
-              existingSocket.disconnect(true);
-              console.log(`✅ Previous session for user ${user.id} in room ${roomId} forcefully disconnected`);
-              
-              // Small delay to ensure cleanup is complete
-              await new Promise(resolve => setTimeout(resolve, 100));
-            } else {
-              // Same user, same device - just update the socket reference (reconnection scenario)
-              console.log(`🔄 Same device reconnection detected for user ${user.id} in room ${roomId}`);
-              // Clean up the previous socket reference if it's different
-              if (existingRoomSession.socketId !== socket.id) {
-                const oldSocket = io.sockets.sockets.get(existingRoomSession.socketId);
-                if (oldSocket && oldSocket.id !== socket.id) {
-                  console.log(`  Cleaning up old socket ${existingRoomSession.socketId}`);
-                  oldSocket.leave(roomId);
-                  removeUserFromRoom(existingRoomSession.socketId, roomId);
-                  joinedRooms.delete(existingRoomSession.socketId);
-                }
-              }
-            }
-          } else {
-            // Existing session is no longer connected, clean it up
-            console.log(`🧹 Cleaning up stale session for user ${user.id} in room ${roomId}`);
-            roomUserSessions.delete(sessionKey);
-          }
-        } else {
-          console.log(`✅ No existing session found for user ${user.id} in room ${roomId} - proceeding with join`);
-        }
+        const { roomId, user } = data; // Expecting {roomId, user: {id, name, isTutor}}            
 
-        // Check if socket is already in this room
         if (joinedRooms.get(socket.id) === roomId) {
           console.log(`Socket ${socket.id} already in room ${roomId}`);
-          // Update timestamp for existing connection
-          if (activeUsers.has(user.id)) {
-            activeUsers.get(user.id).timestamp = Date.now();
-          }
-          if (roomUserSessions.has(sessionKey)) {
-            roomUserSessions.get(sessionKey).timestamp = Date.now();
-          }
           return;
         }
         
@@ -131,41 +30,15 @@ export default function socketManager(io) {
         if (previousRoom) {
           socket.leave(previousRoom);
           removeUserFromRoom(socket.id, previousRoom);
-          // Remove from previous room session tracking
-          const previousSessionKey = `${previousRoom}-${user.id}`;
-          roomUserSessions.delete(previousSessionKey);
           console.log(`Socket ${socket.id} left previous room ${previousRoom}`);
         }
 
-        // Join the new room
         socket.join(roomId);
         joinedRooms.set(socket.id, roomId);
         
-        // Update global user tracking
-        activeUsers.set(user.id, {
-          socketId: socket.id,
-          roomId,
-          timestamp: Date.now(),
-          userAgent,
-          ip: userIP
-        });
-
-        // Update room-specific session tracking
-        roomUserSessions.set(sessionKey, {
-          socketId: socket.id,
-          timestamp: Date.now(),
-          userAgent,
-          ip: userIP
-        });
-        
-        console.log(`📝 Updated session tracking:`);
-        console.log(`  Global activeUsers for ${user.id}:`, activeUsers.get(user.id));
-        console.log(`  Room session ${sessionKey}:`, roomUserSessions.get(sessionKey));
-        console.log(`  Total room sessions:`, roomUserSessions.size);
-        
         // Add user to room tracking
         addUserToRoom(socket.id, roomId, user);
-        console.log(`✅ Socket ${socket.id} (${user.name}) successfully joined room ${roomId}`);
+        console.log(`Socket ${socket.id} (${user.name}) joined room ${roomId}`);
 
         // Send current view to the user
         try {
@@ -186,29 +59,6 @@ export default function socketManager(io) {
 
       } catch (error) {
         console.error("Error in join-room:", error);
-        socket.emit("join-room-error", {
-          message: "Failed to join room. Please try again.",
-          error: error.message
-        });
-      }
-    });
-
-    // Add heartbeat to keep sessions alive
-    socket.on("heartbeat", (data) => {
-      const { userId, roomId } = data;
-      if (userId && roomId) {
-        // Update global user tracking
-        const userConnection = activeUsers.get(userId);
-        if (userConnection && userConnection.socketId === socket.id) {
-          userConnection.timestamp = Date.now();
-        }
-
-        // Update room session tracking
-        const sessionKey = `${roomId}-${userId}`;
-        const roomSession = roomUserSessions.get(sessionKey);
-        if (roomSession && roomSession.socketId === socket.id) {
-          roomSession.timestamp = Date.now();
-        }
       }
     });
 
@@ -228,30 +78,11 @@ export default function socketManager(io) {
     viewEvents(socket, io);
     qaEvents(socket, io);
 
-    socket.on("disconnect", (reason) => {
-      console.log("User disconnected:", socket.id, "Reason:", reason);
+    socket.on("disconnect", () => {
+      console.log("User disconnected:", socket.id);
       
       const roomId = joinedRooms.get(socket.id);
       if (roomId) {
-        // Find the user associated with this socket
-        const roomUserSet = roomUsers.get(roomId);
-        if (roomUserSet) {
-          for (const user of roomUserSet) {
-            if (user.socketId === socket.id) {
-              // Remove from room session tracking
-              const sessionKey = `${roomId}-${user.userId}`;
-              roomUserSessions.delete(sessionKey);
-              
-              // Remove from global tracking if this was their active session
-              const globalUser = activeUsers.get(user.userId);
-              if (globalUser && globalUser.socketId === socket.id) {
-                activeUsers.delete(user.userId);
-              }
-              break;
-            }
-          }
-        }
-        
         removeUserFromRoom(socket.id, roomId);
         joinedRooms.delete(socket.id);
         
@@ -265,23 +96,44 @@ export default function socketManager(io) {
       console.error("Socket error:", error);
     });
 
-    // Clean up interval on server shutdown
-    process.on('SIGTERM', () => {
-      clearInterval(cleanupInterval);
+    const cleanupInterval = setInterval(() => {
+    const now = Date.now();
+    const TIMEOUT = 30 * 60 * 1000; // 30 minutes timeout
+    const STALE_CONNECTIONS = [];
+
+    for (const [userId, connection] of activeUsers.entries()) {
+      if (now - connection.timestamp > TIMEOUT) {
+        STALE_CONNECTIONS.push(userId);
+        
+        // Try to disconnect the stale socket if it still exists
+        const staleSocket = io.sockets.sockets.get(connection.socketId);
+        if (staleSocket) {
+          console.log(`Cleaning up stale connection for user ${userId}`);
+          staleSocket.emit("session-timeout", {
+            message: "Your session has timed out due to inactivity"
+          });
+          staleSocket.disconnect(true);
+        }
+      }
+    }
+
+    // Remove stale connections
+    STALE_CONNECTIONS.forEach(userId => {
+      activeUsers.delete(userId);
     });
+
+    if (STALE_CONNECTIONS.length > 0) {
+      console.log(`Cleaned up ${STALE_CONNECTIONS.length} stale connections`);
+    }
+  }, 5 * 60 * 1000); // Run cleanup every 5 minutes
+
+  // Clean up interval on server shutdown
+  process.on('SIGTERM', () => {
+    clearInterval(cleanupInterval);
+  });
   });
 }
 
-// Helper function to clean up user from all room sessions
-function cleanupUserFromAllRooms(userId) {
-  const keysToDelete = [];
-  for (const [sessionKey, session] of roomUserSessions.entries()) {
-    if (sessionKey.endsWith(`-${userId}`)) {
-      keysToDelete.push(sessionKey);
-    }
-  }
-  keysToDelete.forEach(key => roomUserSessions.delete(key));
-}
 
 // Helper functions for room user management
 function addUserToRoom(socketId, roomId, user) {
@@ -290,15 +142,6 @@ function addUserToRoom(socketId, roomId, user) {
   }
 
   const roomUserSet = roomUsers.get(roomId);
-  // Remove any existing entry for this user first
-  for (const existingUser of roomUserSet) {
-    if (existingUser.userId === user.id) {
-      roomUserSet.delete(existingUser);
-      break;
-    }
-  }
-  
-  // Add the new entry
   roomUserSet.add({
     socketId,
     userId: user.id,
@@ -350,19 +193,8 @@ function getRoomStats(roomId) {
 function broadcastRoomStats(io, roomId) {
   const stats = getRoomStats(roomId);
   io.to(roomId).emit("room-stats-update", stats);
-}
-
-// Helper function to check if a specific user is already in a specific room
-function isUserAlreadyInRoom(userId, roomId) {
-  const sessionKey = `${roomId}-${userId}`;
-  return roomUserSessions.has(sessionKey);
-}
-
-// Helper function to get user's current session in a room
-function getUserSessionInRoom(userId, roomId) {
-  const sessionKey = `${roomId}-${userId}`;
-  return roomUserSessions.get(sessionKey);
+  // console.log(`Broadcasting stats for room ${roomId}:`, stats);
 }
 
 // Export helper functions for potential use in other modules
-export { getRoomStats, broadcastRoomStats, roomUserSessions, isUserAlreadyInRoom, getUserSessionInRoom };
+export { getRoomStats, broadcastRoomStats };
