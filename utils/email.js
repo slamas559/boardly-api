@@ -2,7 +2,7 @@ import nodemailer from 'nodemailer';
 
 const EMAIL_USER = process.env.EMAIL_USER; // your email
 const EMAIL_PASS = process.env.EMAIL_PASS; // your email app password
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const FRONTEND_URL = process.env.FRONTEND_URL;
 
 const createTransporter = () => {
   return nodemailer.createTransport({
@@ -50,7 +50,7 @@ export const sendVerificationEmail = async (email, verificationToken, name) => {
       <body>
         <div class="email-container">
           <div class="header">
-            <h1>Welcome to EduConnect! 🎓</h1>
+            <h1>Welcome to Boardly 🎓</h1>
           </div>
           <div class="content">
             <h2>Hi ${name},</h2>
@@ -77,7 +77,7 @@ export const sendVerificationEmail = async (email, verificationToken, name) => {
             
             <p>Need help? Reply to this email and our support team will assist you.</p>
             
-            <p>Best regards,<br>The EduConnect Team</p>
+            <p>Best regards,<br>The Boardly Team</p>
           </div>
           <div class="footer">
             <p>&copy; 2025 Boardly. All rights reserved.</p>

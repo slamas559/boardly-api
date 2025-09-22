@@ -24,7 +24,7 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 
 const EMAIL_USER = process.env.EMAIL_USER; // your email
 const EMAIL_PASS = process.env.EMAIL_PASS; // your email app password
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const FRONTEND_URL = process.env.FRONTEND_URL;
 
 
 // Function to create Paystack subaccount
