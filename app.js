@@ -5,17 +5,23 @@ import roomRoutes from './routes/roomRoutes.js';
 import pdfRoutes from './routes/pdfRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import boardRoutes from './routes/boardRoutes.js';
+import paystackRoutes from './routes/paystackRoutes.js';
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 
 app.use("/rooms", roomRoutes);
 app.use("/pdf", pdfRoutes);
 app.use("/auth", authRoutes);
 app.use("/board", boardRoutes);
+app.use("/payments", paystackRoutes)
 
 app.get('/', (req, res) => {
   res.send('API is running...');
