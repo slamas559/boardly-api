@@ -36,14 +36,21 @@ export default function socketManager(io) {
       try {
         const { roomId, user } = data; // Expecting {roomId, user: {id, name, isTutor}}
         
+        console.log(`User ${user.id} (${user.name}) attempting to join room ${roomId}`);
+        
         const sessionKey = `${roomId}-${user.id}`;
-        const existingRoomSession = roomUserSessions.get(sessionKey);
+        const existingRoomSession = getUserSessionInRoom(user.id, roomId);
         const userAgent = socket.handshake.headers['user-agent'] || 'unknown';
         const userIP = socket.handshake.address || socket.conn.remoteAddress || 'unknown';
         
-        // Check if user is already active in THIS specific room
+        console.log(`Session key: ${sessionKey}`);
+        console.log(`Existing session found: ${!!existingRoomSession}`);
+        
+        // Check if THIS SAME USER is already active in THIS specific room from a different device
         if (existingRoomSession) {
           const existingSocket = io.sockets.sockets.get(existingRoomSession.socketId);
+          
+          console.log(`Existing socket connected: ${existingSocket?.connected}`);
           
           if (existingSocket && existingSocket.connected) {
             // Check if it's the same device/browser (by comparing user agent and IP)
@@ -52,14 +59,24 @@ export default function socketManager(io) {
               existingRoomSession.ip === userIP
             );
             
+            console.log(`Is same device check:`);
+            console.log(`  Existing UA: ${existingRoomSession.userAgent}`);
+            console.log(`  New UA: ${userAgent}`);
+            console.log(`  Existing IP: ${existingRoomSession.ip}`);
+            console.log(`  New IP: ${userIP}`);
+            console.log(`  Same device: ${isSameDevice}`);
+            
             if (!isSameDevice) {
-              // Different device detected - disconnect the existing session
-              console.log(`Multi-device access detected for user ${user.id} in room ${roomId}`);
+              // Same user, different device detected - disconnect the existing session
+              console.log(`🚫 Multi-device access detected for user ${user.id} (${user.name}) in room ${roomId}`);
+              console.log(`  Disconnecting existing session on socket ${existingRoomSession.socketId}`);
               
               existingSocket.emit("force-disconnect", {
                 reason: "Multi-device access detected",
-                message: "Your session was ended because you joined this room from another device.",
-                code: "MULTI_DEVICE_ACCESS"
+                message: "Your session was ended because you joined this room from another device. Only one device is allowed per user per room session.",
+                code: "MULTI_DEVICE_ACCESS",
+                userId: user.id,
+                roomId: roomId
               });
               
               // Clean up the existing session
@@ -69,25 +86,31 @@ export default function socketManager(io) {
               roomUserSessions.delete(sessionKey);
               
               existingSocket.disconnect(true);
-              console.log(`Previous session for user ${user.id} in room ${roomId} forcefully disconnected due to multi-device access`);
+              console.log(`✅ Previous session for user ${user.id} in room ${roomId} forcefully disconnected`);
               
               // Small delay to ensure cleanup is complete
               await new Promise(resolve => setTimeout(resolve, 100));
             } else {
-              // Same device - just update the socket reference
-              console.log(`Same device reconnection detected for user ${user.id} in room ${roomId}`);
-              
-              // Clean up the previous socket reference
+              // Same user, same device - just update the socket reference (reconnection scenario)
+              console.log(`🔄 Same device reconnection detected for user ${user.id} in room ${roomId}`);
+              // Clean up the previous socket reference if it's different
               if (existingRoomSession.socketId !== socket.id) {
                 const oldSocket = io.sockets.sockets.get(existingRoomSession.socketId);
-                if (oldSocket) {
+                if (oldSocket && oldSocket.id !== socket.id) {
+                  console.log(`  Cleaning up old socket ${existingRoomSession.socketId}`);
                   oldSocket.leave(roomId);
                   removeUserFromRoom(existingRoomSession.socketId, roomId);
                   joinedRooms.delete(existingRoomSession.socketId);
                 }
               }
             }
+          } else {
+            // Existing session is no longer connected, clean it up
+            console.log(`🧹 Cleaning up stale session for user ${user.id} in room ${roomId}`);
+            roomUserSessions.delete(sessionKey);
           }
+        } else {
+          console.log(`✅ No existing session found for user ${user.id} in room ${roomId} - proceeding with join`);
         }
 
         // Check if socket is already in this room
@@ -135,9 +158,14 @@ export default function socketManager(io) {
           ip: userIP
         });
         
+        console.log(`📝 Updated session tracking:`);
+        console.log(`  Global activeUsers for ${user.id}:`, activeUsers.get(user.id));
+        console.log(`  Room session ${sessionKey}:`, roomUserSessions.get(sessionKey));
+        console.log(`  Total room sessions:`, roomUserSessions.size);
+        
         // Add user to room tracking
         addUserToRoom(socket.id, roomId, user);
-        console.log(`Socket ${socket.id} (${user.name}) joined room ${roomId}`);
+        console.log(`✅ Socket ${socket.id} (${user.name}) successfully joined room ${roomId}`);
 
         // Send current view to the user
         try {
@@ -324,5 +352,17 @@ function broadcastRoomStats(io, roomId) {
   io.to(roomId).emit("room-stats-update", stats);
 }
 
+// Helper function to check if a specific user is already in a specific room
+function isUserAlreadyInRoom(userId, roomId) {
+  const sessionKey = `${roomId}-${userId}`;
+  return roomUserSessions.has(sessionKey);
+}
+
+// Helper function to get user's current session in a room
+function getUserSessionInRoom(userId, roomId) {
+  const sessionKey = `${roomId}-${userId}`;
+  return roomUserSessions.get(sessionKey);
+}
+
 // Export helper functions for potential use in other modules
-export { getRoomStats, broadcastRoomStats, roomUserSessions };
+export { getRoomStats, broadcastRoomStats, roomUserSessions, isUserAlreadyInRoom, getUserSessionInRoom };
