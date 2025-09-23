@@ -193,7 +193,7 @@ function getRoomStats(roomId) {
 function broadcastRoomStats(io, roomId) {
   const stats = getRoomStats(roomId);
   io.to(roomId).emit("room-stats-update", stats);
-  // console.log(`Broadcasting stats for room ${roomId}:`, stats);
+  console.log(`Broadcasting stats for room ${roomId}:`, stats);
 }
 
 // Export helper functions for potential use in other modules
