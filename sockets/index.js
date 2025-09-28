@@ -19,12 +19,13 @@ export default function socketManager(io) {
     socket.on("join-room", async (data) => {
       try {
         const { roomId, user } = data; // Expecting {roomId, user: {id, name, isTutor}}            
-
+        // console.log(data)
         if (joinedRooms.get(socket.id) === roomId) {
           console.log(`Socket ${socket.id} already in room ${roomId}`);
           return;
         }
         
+
         // Leave previous room if any
         const previousRoom = joinedRooms.get(socket.id);
         if (previousRoom) {
@@ -38,6 +39,8 @@ export default function socketManager(io) {
         
         // Add user to room tracking
         addUserToRoom(socket.id, roomId, user);
+        // console.log(`Added user to room ${roomId}:`, user);
+        // checkUserInRoom(roomId, user.id)
         console.log(`Socket ${socket.id} (${user.name}) joined room ${roomId}`);
 
         // Send current view to the user
@@ -168,6 +171,19 @@ function removeUserFromRoom(socketId, roomId) {
   }
 }
 
+function checkUserInRoom(roomId, userId) {
+  const roomUserSet = roomUsers.get(roomId);
+  console.log(roomUserSet)
+  if (!roomUserSet) return false;
+  const users = Array.from(roomUserSet).some(user => user.userId === userId);
+  const userName = users ? Array.from(roomUserSet).find(user => user.userId === userId).name : 'Unknown';
+  // console.log(roomUserSet)
+  if (users) {
+    // console.log(`User already in room ${roomId}:`, userName, users);
+  }
+  return users;
+}
+
 function getRoomStats(roomId) {
   const roomUserSet = roomUsers.get(roomId);
   if (!roomUserSet) {
@@ -193,7 +209,7 @@ function getRoomStats(roomId) {
 function broadcastRoomStats(io, roomId) {
   const stats = getRoomStats(roomId);
   io.to(roomId).emit("room-stats-update", stats);
-  console.log(`Broadcasting stats for room ${roomId}:`, stats);
+  // console.log(`Broadcasting stats for room ${roomId}:`, stats);
 }
 
 // Export helper functions for potential use in other modules
