@@ -13,6 +13,7 @@ import passport from "passport";
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { sendVerificationEmail } from "../utils/email.js";
+import 'dotenv/config';
 
 
 
