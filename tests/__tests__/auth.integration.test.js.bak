@@ -1,0 +1,724 @@
+import { jest } from '@jest/globals';
+import request from 'supertest';
+import express from 'express';
+import axios from 'axios';
+import User from '../../models/User.js';
+import authRoutes from '../../routes/authRoutes.js';
+import { createTestUser, createAuthenticatedUser } from '../helpers/testHelpers.js';
+import { sendVerificationEmail } from '../../utils/email.js';
+
+// Mock external dependencies
+jest.mock('axios');
+jest.mock('../../utils/email.js');
+jest.mock('../../config/cloudinary.js', () => ({
+  imageStorage: {}
+}));
+
+// Create Express app for testing
+const app = express();
+app.use(express.json());
+app.use('/auth', authRoutes);
+
+describe('Auth Integration Tests', () => {
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('POST /auth/register', () => {
+    test('should register new user successfully', async () => {
+      sendVerificationEmail.mockResolvedValue(true);
+
+      const response = await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'New User',
+          email: 'newuser@example.com',
+          password: 'password123',
+          bio: 'I am a new user',
+          role: 'student'
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.message).toContain('verification');
+      expect(response.body.verificationSent).toBe(true);
+      expect(sendVerificationEmail).toHaveBeenCalledWith(
+        'newuser@example.com',
+        expect.any(String),
+        'New User'
+      );
+
+      const user = await User.findOne({ email: 'newuser@example.com' });
+      expect(user).toBeDefined();
+      expect(user.emailVerified).toBe(false);
+      expect(user.emailVerificationToken).toBeDefined();
+    });
+
+    test('should reject registration with existing email', async () => {
+      await createTestUser({ email: 'existing@example.com' });
+
+      const response = await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'Duplicate User',
+          email: 'existing@example.com',
+          password: 'password123',
+          role: 'student'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe('Email already exists');
+    });
+
+    test('should fail if email sending fails', async () => {
+      sendVerificationEmail.mockResolvedValue(false);
+
+      const response = await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'Test User',
+          email: 'test@example.com',
+          password: 'password123',
+          role: 'student'
+        });
+
+      expect(response.status).toBe(500);
+      expect(response.body.message).toContain('Failed to send verification email');
+      
+      const user = await User.findOne({ email: 'test@example.com' });
+      expect(user).toBeNull();
+    });
+  });
+
+  describe('GET /auth/verify-email', () => {
+    test('should verify email with valid token', async () => {
+      const verificationToken = 'valid-token-123';
+      const user = await createTestUser({
+        emailVerified: false,
+        emailVerificationToken: verificationToken,
+        emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+      });
+
+      const response = await request(app)
+        .get('/auth/verify-email')
+        .query({ token: verificationToken });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.message).toContain('verified successfully');
+      expect(response.body.token).toBeDefined();
+      expect(response.body.user.emailVerified).toBe(true);
+
+      const updatedUser = await User.findById(user._id);
+      expect(updatedUser.emailVerified).toBe(true);
+      expect(updatedUser.emailVerificationToken).toBeUndefined();
+    });
+
+    test('should reject expired token', async () => {
+      const expiredToken = 'expired-token-456';
+      await createTestUser({
+        emailVerified: false,
+        emailVerificationToken: expiredToken,
+        emailVerificationExpires: new Date(Date.now() - 1000) // Expired
+      });
+
+      const response = await request(app)
+        .get('/auth/verify-email')
+        .query({ token: expiredToken });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toContain('Invalid or expired');
+    });
+
+    test('should reject invalid token', async () => {
+      const response = await request(app)
+        .get('/auth/verify-email')
+        .query({ token: 'non-existent-token' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toContain('Invalid or expired');
+    });
+  });
+
+  describe('POST /auth/resend-verification', () => {
+    test('should resend verification email', async () => {
+      sendVerificationEmail.mockResolvedValue(true);
+      
+      const user = await createTestUser({
+        email: 'unverified@example.com',
+        emailVerified: false
+      });
+
+      const response = await request(app)
+        .post('/auth/resend-verification')
+        .send({ email: 'unverified@example.com' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.message).toContain('sent successfully');
+      expect(sendVerificationEmail).toHaveBeenCalled();
+    });
+
+    test('should reject if user not found or already verified', async () => {
+      const response = await request(app)
+        .post('/auth/resend-verification')
+        .send({ email: 'nonexistent@example.com' });
+
+      expect(response.status).toBe(404);
+      expect(response.body.message).toContain('not found or already verified');
+    });
+  });
+
+  describe('POST /auth/login', () => {
+    test('should login with correct credentials', async () => {
+      const user = await createTestUser({
+        email: 'login@example.com',
+        emailVerified: true
+      });
+
+      const response = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'login@example.com',
+          password: 'password123'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.token).toBeDefined();
+      expect(response.body.user.email).toBe('login@example.com');
+      expect(response.body.user.password).toBeUndefined();
+    });
+
+    test('should reject unverified user', async () => {
+      await createTestUser({
+        email: 'unverified@example.com',
+        emailVerified: false
+      });
+
+      const response = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'unverified@example.com',
+          password: 'password123'
+        });
+
+      expect(response.status).toBe(403);
+      expect(response.body.message).toContain('verify your email');
+      expect(response.body.emailVerified).toBe(false);
+    });
+
+    test('should reject incorrect password', async () => {
+      await createTestUser({
+        email: 'user@example.com',
+        emailVerified: true
+      });
+
+      const response = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'user@example.com',
+          password: 'wrongpassword'
+        });
+
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe('Incorrect password');
+    });
+
+    test('should reject non-existent user', async () => {
+      const response = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'nonexistent@example.com',
+          password: 'password123'
+        });
+
+      expect(response.status).toBe(404);
+      expect(response.body.message).toBe('User not found');
+    });
+
+    test('should reject Google user trying to login with password', async () => {
+      await createTestUser({
+        email: 'google@example.com',
+        googleId: 'google-123',
+        emailVerified: true
+      });
+
+      const response = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'google@example.com',
+          password: 'password123'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toContain('Google Sign-In');
+      expect(response.body.isGoogleUser).toBe(true);
+    });
+  });
+
+  describe('POST /auth/google', () => {
+    test('should register new user via Google (register context)', async () => {
+      const response = await request(app)
+        .post('/auth/google')
+        .send({
+          credential: 'google-credential-token',
+          role: 'student',
+          context: 'register',
+          userInfo: {
+            email: 'newgoogle@example.com',
+            name: 'Google User',
+            picture: 'https://example.com/photo.jpg',
+            googleId: 'google-new-123'
+          }
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.token).toBeDefined();
+      expect(response.body.user.email).toBe('newgoogle@example.com');
+
+      const user = await User.findOne({ email: 'newgoogle@example.com' });
+      expect(user.googleId).toBe('google-new-123');
+      expect(user.isGoogleUser).toBe(true);
+    });
+
+    test('should login existing Google user (login context)', async () => {
+      await createTestUser({
+        email: 'existing@example.com',
+        googleId: 'google-existing-123',
+        emailVerified: true
+      });
+
+      const response = await request(app)
+        .post('/auth/google')
+        .send({
+          credential: 'google-credential-token',
+          context: 'login',
+          userInfo: {
+            email: 'existing@example.com',
+            name: 'Existing User',
+            googleId: 'google-existing-123'
+          }
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.token).toBeDefined();
+      expect(response.body.user.email).toBe('existing@example.com');
+    });
+
+    test('should reject registration if email exists (register context)', async () => {
+      await createTestUser({ email: 'duplicate@example.com' });
+
+      const response = await request(app)
+        .post('/auth/google')
+        .send({
+          credential: 'google-credential-token',
+          role: 'student',
+          context: 'register',
+          userInfo: {
+            email: 'duplicate@example.com',
+            name: 'Duplicate User',
+            googleId: 'google-dup-123'
+          }
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toContain('already exists');
+      expect(response.body.shouldRedirectToLogin).toBe(true);
+    });
+
+    test('should reject login if user not found (login context)', async () => {
+      const response = await request(app)
+        .post('/auth/google')
+        .send({
+          credential: 'google-credential-token',
+          context: 'login',
+          userInfo: {
+            email: 'notfound@example.com',
+            name: 'Not Found User',
+            googleId: 'google-notfound-123'
+          }
+        });
+
+      expect(response.status).toBe(404);
+      expect(response.body.message).toContain('No account found');
+      expect(response.body.shouldRedirectToRegister).toBe(true);
+    });
+  });
+
+  describe('GET /auth/banks', () => {
+    test('should fetch Nigerian banks', async () => {
+      const mockBanks = [
+        { name: 'GTBank', code: '058', slug: 'gtbank' },
+        { name: 'Access Bank', code: '044', slug: 'access-bank' }
+      ];
+
+      axios.get.mockResolvedValue({
+        data: { data: mockBanks }
+      });
+
+      const response = await request(app).get('/auth/banks');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.banks).toHaveLength(2);
+      expect(response.body.banks[0].name).toBe('GTBank');
+    });
+
+    test('should handle error when fetching banks', async () => {
+      axios.get.mockRejectedValue(new Error('API Error'));
+
+      const response = await request(app).get('/auth/banks');
+
+      expect(response.status).toBe(500);
+      expect(response.body.message).toContain('Failed to fetch banks');
+    });
+  });
+
+  describe('POST /auth/resolve-account', () => {
+    test('should resolve valid bank account', async () => {
+      const { user, token } = await createAuthenticatedUser({ role: 'tutor' });
+
+      axios.get.mockResolvedValue({
+        data: {
+          status: true,
+          data: { account_name: 'John Doe' }
+        }
+      });
+
+      const response = await request(app)
+        .post('/auth/resolve-account')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '0123456789'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.accountName).toBe('John Doe');
+    });
+
+    test('should reject invalid account number length', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      const response = await request(app)
+        .post('/auth/resolve-account')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '123' // Invalid length
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toContain('10 digits');
+    });
+
+    test('should reject missing parameters', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      const response = await request(app)
+        .post('/auth/resolve-account')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058'
+          // Missing accountNumber
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    test('should handle API errors', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      axios.get.mockRejectedValue({
+        response: {
+          data: { message: 'Invalid account' }
+        }
+      });
+
+      const response = await request(app)
+        .post('/auth/resolve-account')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '0123456789'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+  });
+
+  describe('POST /auth/setup-bank', () => {
+    test('should setup bank account for tutor', async () => {
+      const { user, token } = await createAuthenticatedUser({ role: 'tutor' });
+
+      axios.get.mockResolvedValue({
+        data: {
+          status: true,
+          data: { account_name: 'Tutor Name' }
+        }
+      });
+
+      axios.post.mockResolvedValue({
+        data: {
+          data: { subaccount_code: 'ACCT_test123' }
+        }
+      });
+
+      const response = await request(app)
+        .post('/auth/setup-bank')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '0123456789'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.accountName).toBe('Tutor Name');
+      expect(response.body.subaccountCode).toBe('ACCT_test123');
+
+      const updatedUser = await User.findById(user._id);
+      expect(updatedUser.hasPaymentSetup).toBe(true);
+      expect(updatedUser.bankDetails.accountNumber).toBe('0123456789');
+      expect(updatedUser.paystackSubaccountCode).toBe('ACCT_test123');
+    });
+
+    test('should reject bank setup for non-tutor', async () => {
+      const { user, token } = await createAuthenticatedUser({ role: 'student' });
+
+      const response = await request(app)
+        .post('/auth/setup-bank')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '0123456789'
+        });
+
+      expect(response.status).toBe(403);
+      expect(response.body.message).toContain('Only tutors');
+    });
+
+    test('should reject invalid account details', async () => {
+      const { user, token } = await createAuthenticatedUser({ role: 'tutor' });
+
+      axios.get.mockResolvedValue({
+        data: {
+          status: false
+        }
+      });
+
+      const response = await request(app)
+        .post('/auth/setup-bank')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '0123456789'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toContain('Invalid account details');
+    });
+
+    test('should handle subaccount creation failure', async () => {
+      const { user, token } = await createAuthenticatedUser({ role: 'tutor' });
+
+      axios.get.mockResolvedValue({
+        data: {
+          status: true,
+          data: { account_name: 'Tutor Name' }
+        }
+      });
+
+      axios.post.mockRejectedValue(new Error('Paystack API Error'));
+
+      const response = await request(app)
+        .post('/auth/setup-bank')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '0123456789'
+        });
+
+      expect(response.status).toBe(500);
+      expect(response.body.message).toContain('Failed to create payment subaccount');
+    });
+  });
+
+  describe('GET /auth/profile', () => {
+    test('should get user profile with stats', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      const response = await request(app)
+        .get('/auth/profile')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.email).toBe(user.email);
+      expect(response.body.stats).toBeDefined();
+      expect(response.body.stats.totalRooms).toBeDefined();
+      expect(response.body.password).toBeUndefined();
+    });
+
+    test('should reject unauthenticated request', async () => {
+      const response = await request(app).get('/auth/profile');
+
+      expect(response.status).toBe(401);
+    });
+
+    test('should return 404 for non-existent user', async () => {
+      const { user, token } = await createAuthenticatedUser();
+      
+      // Delete user but keep token
+      await User.findByIdAndDelete(user._id);
+
+      const response = await request(app)
+        .get('/auth/profile')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.message).toBe('User not found');
+    });
+  });
+
+  describe('PUT /auth/profile', () => {
+    test('should update user profile', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      const response = await request(app)
+        .put('/auth/profile')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          name: 'Updated Name',
+          bio: 'Updated bio'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.user.name).toBe('Updated Name');
+      expect(response.body.user.bio).toBe('Updated bio');
+
+      const updatedUser = await User.findById(user._id);
+      expect(updatedUser.name).toBe('Updated Name');
+      expect(updatedUser.bio).toBe('Updated bio');
+    });
+
+    test('should update password for non-Google user', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      const response = await request(app)
+        .put('/auth/profile')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          currentPassword: 'password123',
+          newPassword: 'newpassword123'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.message).toContain('updated successfully');
+
+      // Verify password was changed
+      const updatedUser = await User.findById(user._id);
+      const bcrypt = await import('bcryptjs');
+      const isMatch = await bcrypt.default.compare('newpassword123', updatedUser.password);
+      expect(isMatch).toBe(true);
+    });
+
+    test('should reject incorrect current password', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      const response = await request(app)
+        .put('/auth/profile')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          currentPassword: 'wrongpassword',
+          newPassword: 'newpassword123'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toContain('Current password is incorrect');
+    });
+
+    test('should reject short new password', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      const response = await request(app)
+        .put('/auth/profile')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          currentPassword: 'password123',
+          newPassword: '123' // Too short
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toContain('at least 6 characters');
+    });
+
+    test('should not update password for Google users', async () => {
+      const { user, token } = await createAuthenticatedUser({
+        googleId: 'google-123',
+        isGoogleUser: true
+      });
+
+      const response = await request(app)
+        .put('/auth/profile')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          name: 'Updated Name',
+          currentPassword: 'anypassword',
+          newPassword: 'newpassword123'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.user.name).toBe('Updated Name');
+      // Password should not have been updated
+    });
+  });
+
+  describe('DELETE /auth/profile', () => {
+    test('should delete user account', async () => {
+      const { user, token } = await createAuthenticatedUser();
+
+      const response = await request(app)
+        .delete('/auth/profile')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.message).toContain('deleted successfully');
+
+      const deletedUser = await User.findById(user._id);
+      expect(deletedUser).toBeNull();
+    });
+
+    test('should reject unauthenticated deletion', async () => {
+      const response = await request(app).delete('/auth/profile');
+
+      expect(response.status).toBe(401);
+    });
+  });
+
+  describe('GET /auth/stats', () => {
+    test('should get user statistics', async () => {
+      const { user, token } = await createAuthenticatedUser({ role: 'tutor' });
+
+      const response = await request(app)
+        .get('/auth/stats')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.totalRooms).toBeDefined();
+      expect(response.body.activeRooms).toBeDefined();
+      expect(response.body.totalStudents).toBeDefined();
+      expect(response.body.totalHours).toBeDefined();
+      expect(response.body.earnings).toBeDefined();
+      expect(response.body.hasPaymentSetup).toBeDefined();
+      expect(response.body.rooms).toBeInstanceOf(Array);
+    });
+
+    test('should reject unauthenticated stats request', async () => {
+      const response = await request(app).get('/auth/stats');
+
+      expect(response.status).toBe(401);
+    });
+  });
+});

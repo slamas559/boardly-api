@@ -68,7 +68,7 @@ router.get(
   }),
   (req, res) => {
     const token = req.user.generateJWT(); // Create your own JWT method on user model
-    res.redirect(`http://localhost:5173/auth-success?token=${token}`);
+    res.redirect(`http://${FRONTEND_URL}/auth-success?token=${token}`);
   }
 );
 

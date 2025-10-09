@@ -1,0 +1,425 @@
+import { jest } from '@jest/globals';
+import request from 'supertest';
+import express from 'express';
+import axios from 'axios';
+import User from '../../models/User.js';
+import authRoutes from '../../routes/authRoutes.js';
+import { sendVerificationEmail } from '../../utils/email.js';
+
+// Mock dependencies
+jest.mock('axios');
+jest.mock('../../utils/email.js');
+jest.mock('../../config/cloudinary.js', () => ({
+  imageStorage: {}
+}));
+
+// Create Express app
+const app = express();
+app.use(express.json());
+app.use('/auth', authRoutes);
+
+describe('Auth E2E Tests - Complete User Flows', () => {
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Complete Student Registration and Login Flow', () => {
+    test('should complete full student journey: register -> verify -> login', async () => {
+      sendVerificationEmail.mockResolvedValue(true);
+
+      // Step 1: Register
+      const registerResponse = await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'Jane Student',
+          email: 'jane.student@example.com',
+          password: 'securepass123',
+          bio: 'Eager to learn',
+          role: 'student'
+        });
+
+      expect(registerResponse.status).toBe(201);
+      expect(registerResponse.body.verificationSent).toBe(true);
+
+      // Get the user and verification token
+      const user = await User.findOne({ email: 'jane.student@example.com' });
+      expect(user).toBeDefined();
+      expect(user.emailVerified).toBe(false);
+      const verificationToken = user.emailVerificationToken;
+
+      // Step 2: Try to login before verification (should fail)
+      const prematureLoginResponse = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'jane.student@example.com',
+          password: 'securepass123'
+        });
+
+      expect(prematureLoginResponse.status).toBe(403);
+      expect(prematureLoginResponse.body.message).toContain('verify your email');
+
+      // Step 3: Verify email
+      const verifyResponse = await request(app)
+        .get('/auth/verify-email')
+        .query({ token: verificationToken });
+
+      expect(verifyResponse.status).toBe(200);
+      expect(verifyResponse.body.success).toBe(true);
+      expect(verifyResponse.body.token).toBeDefined();
+      const tokenFromVerification = verifyResponse.body.token;
+
+      // Step 4: Login after verification
+      const loginResponse = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'jane.student@example.com',
+          password: 'securepass123'
+        });
+
+      expect(loginResponse.status).toBe(200);
+      expect(loginResponse.body.token).toBeDefined();
+      expect(loginResponse.body.user.email).toBe('jane.student@example.com');
+      expect(loginResponse.body.user.emailVerified).toBe(true);
+
+      // Step 5: Access profile
+      const profileResponse = await request(app)
+        .get('/auth/profile')
+        .set('Authorization', `Bearer ${loginResponse.body.token}`);
+
+      expect(profileResponse.status).toBe(200);
+      expect(profileResponse.body.name).toBe('Jane Student');
+    });
+  });
+
+  describe('Complete Tutor Registration with Bank Setup Flow', () => {
+    test('should complete full tutor journey: register -> verify -> login -> setup bank', async () => {
+      sendVerificationEmail.mockResolvedValue(true);
+      axios.get.mockResolvedValue({
+        data: {
+          status: true,
+          data: { account_name: 'John Tutor' }
+        }
+      });
+      axios.post.mockResolvedValue({
+        data: {
+          data: { subaccount_code: 'ACCT_tutortest123' }
+        }
+      });
+
+      // Step 1: Register as tutor
+      const registerResponse = await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'John Tutor',
+          email: 'john.tutor@example.com',
+          password: 'tutorpass123',
+          bio: 'Experienced mathematics teacher',
+          role: 'tutor'
+        });
+
+      expect(registerResponse.status).toBe(201);
+
+      // Step 2: Verify email
+      const user = await User.findOne({ email: 'john.tutor@example.com' });
+      const verificationToken = user.emailVerificationToken;
+
+      await request(app)
+        .get('/auth/verify-email')
+        .query({ token: verificationToken });
+
+      // Step 3: Login
+      const loginResponse = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'john.tutor@example.com',
+          password: 'tutorpass123'
+        });
+
+      expect(loginResponse.status).toBe(200);
+      const token = loginResponse.body.token;
+
+      // Step 4: Check profile (no payment setup yet)
+      let profileResponse = await request(app)
+        .get('/auth/profile')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(profileResponse.body.hasPaymentSetup).toBe(false);
+
+      // Step 5: Get banks list
+      axios.get.mockResolvedValueOnce({
+        data: {
+          data: [
+            { name: 'GTBank', code: '058', slug: 'gtbank' },
+            { name: 'Access Bank', code: '044', slug: 'access-bank' }
+          ]
+        }
+      });
+
+      const banksResponse = await request(app).get('/auth/banks');
+      expect(banksResponse.status).toBe(200);
+      expect(banksResponse.body.banks.length).toBeGreaterThan(0);
+
+      // Step 6: Resolve account
+      const resolveResponse = await request(app)
+        .post('/auth/resolve-account')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '0123456789'
+        });
+
+      expect(resolveResponse.status).toBe(200);
+      expect(resolveResponse.body.accountName).toBe('John Tutor');
+
+      // Step 7: Setup bank account
+      const setupResponse = await request(app)
+        .post('/auth/setup-bank')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          bankCode: '058',
+          accountNumber: '0123456789'
+        });
+
+      expect(setupResponse.status).toBe(200);
+      expect(setupResponse.body.success).toBe(true);
+      expect(setupResponse.body.subaccountCode).toBeDefined();
+
+      // Step 8: Verify payment setup is complete
+      profileResponse = await request(app)
+        .get('/auth/profile')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(profileResponse.body.hasPaymentSetup).toBe(true);
+      expect(profileResponse.body.bankDetails.accountNumber).toBe('0123456789');
+    });
+  });
+
+  describe('Google OAuth Flow', () => {
+    test('should complete Google registration and login flow', async () => {
+      // Step 1: Register with Google
+      const registerResponse = await request(app)
+        .post('/auth/google')
+        .send({
+          credential: 'google-oauth-token',
+          role: 'student',
+          context: 'register',
+          userInfo: {
+            email: 'google.user@gmail.com',
+            name: 'Google User',
+            picture: 'https://example.com/photo.jpg',
+            googleId: 'google-unique-12345'
+          }
+        });
+
+      expect(registerResponse.status).toBe(200);
+      expect(registerResponse.body.token).toBeDefined();
+      expect(registerResponse.body.user.email).toBe('google.user@gmail.com');
+
+      const user = await User.findOne({ email: 'google.user@gmail.com' });
+      expect(user.googleId).toBe('google-unique-12345');
+      expect(user.isGoogleUser).toBe(true);
+      expect(user.emailVerified).toBe(true); // Google users are auto-verified
+
+      // Step 2: Logout (client-side) and login again with Google
+      const loginResponse = await request(app)
+        .post('/auth/google')
+        .send({
+          credential: 'google-oauth-token',
+          context: 'login',
+          userInfo: {
+            email: 'google.user@gmail.com',
+            name: 'Google User',
+            googleId: 'google-unique-12345'
+          }
+        });
+
+      expect(loginResponse.status).toBe(200);
+      expect(loginResponse.body.token).toBeDefined();
+
+      // Step 3: Try to login with password (should fail)
+      const passwordLoginResponse = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'google.user@gmail.com',
+          password: 'anypassword'
+        });
+
+      expect(passwordLoginResponse.status).toBe(400);
+      expect(passwordLoginResponse.body.message).toContain('Google Sign-In');
+    });
+  });
+
+  describe('Email Verification Resend Flow', () => {
+    test('should handle expired token and resend verification', async () => {
+      sendVerificationEmail.mockResolvedValue(true);
+
+      // Step 1: Register
+      await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'Test User',
+          email: 'resend@example.com',
+          password: 'password123',
+          role: 'student'
+        });
+
+      // Step 2: Manually expire the token
+      const user = await User.findOne({ email: 'resend@example.com' });
+      user.emailVerificationExpires = new Date(Date.now() - 1000); // Expired
+      await user.save();
+
+      // Step 3: Try to verify with expired token
+      const expiredVerifyResponse = await request(app)
+        .get('/auth/verify-email')
+        .query({ token: user.emailVerificationToken });
+
+      expect(expiredVerifyResponse.status).toBe(400);
+      expect(expiredVerifyResponse.body.message).toContain('expired');
+
+      // Step 4: Resend verification
+      const resendResponse = await request(app)
+        .post('/auth/resend-verification')
+        .send({ email: 'resend@example.com' });
+
+      expect(resendResponse.status).toBe(200);
+      expect(sendVerificationEmail).toHaveBeenCalledTimes(2); // Once during registration, once for resend
+
+      // Step 5: Verify with new token
+      const updatedUser = await User.findOne({ email: 'resend@example.com' });
+      const newToken = updatedUser.emailVerificationToken;
+
+      const verifyResponse = await request(app)
+        .get('/auth/verify-email')
+        .query({ token: newToken });
+
+      expect(verifyResponse.status).toBe(200);
+      expect(verifyResponse.body.success).toBe(true);
+    });
+  });
+
+  describe('Profile Update Flow', () => {
+    test('should complete profile update journey', async () => {
+      sendVerificationEmail.mockResolvedValue(true);
+
+      // Step 1: Register and verify
+      await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'Original Name',
+          email: 'update@example.com',
+          password: 'original123',
+          bio: 'Original bio',
+          role: 'student'
+        });
+
+      const user = await User.findOne({ email: 'update@example.com' });
+      await request(app)
+        .get('/auth/verify-email')
+        .query({ token: user.emailVerificationToken });
+
+      // Step 2: Login
+      const loginResponse = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'update@example.com',
+          password: 'original123'
+        });
+
+      const token = loginResponse.body.token;
+
+      // Step 3: Update profile info
+      const updateResponse = await request(app)
+        .put('/auth/profile')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          name: 'Updated Name',
+          bio: 'Updated bio'
+        });
+
+      expect(updateResponse.status).toBe(200);
+      expect(updateResponse.body.user.name).toBe('Updated Name');
+      expect(updateResponse.body.user.bio).toBe('Updated bio');
+
+      // Step 4: Update password
+      const passwordUpdateResponse = await request(app)
+        .put('/auth/profile')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          currentPassword: 'original123',
+          newPassword: 'newpassword456'
+        });
+
+      expect(passwordUpdateResponse.status).toBe(200);
+
+      // Step 5: Login with new password
+      const newLoginResponse = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'update@example.com',
+          password: 'newpassword456'
+        });
+
+      expect(newLoginResponse.status).toBe(200);
+
+      // Step 6: Try to login with old password (should fail)
+      const oldPasswordResponse = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'update@example.com',
+          password: 'original123'
+        });
+
+      expect(oldPasswordResponse.status).toBe(401);
+    });
+  });
+
+  describe('Account Deletion Flow', () => {
+    test('should delete account and prevent further access', async () => {
+      sendVerificationEmail.mockResolvedValue(true);
+
+      // Step 1: Create and verify account
+      await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'Delete Me',
+          email: 'delete@example.com',
+          password: 'password123',
+          role: 'student'
+        });
+
+      const user = await User.findOne({ email: 'delete@example.com' });
+      await request(app)
+        .get('/auth/verify-email')
+        .query({ token: user.emailVerificationToken });
+
+      // Step 2: Login
+      const loginResponse = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'delete@example.com',
+          password: 'password123'
+        });
+
+      const token = loginResponse.body.token;
+
+      // Step 3: Delete account
+      const deleteResponse = await request(app)
+        .delete('/auth/profile')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(deleteResponse.status).toBe(200);
+
+      // Step 4: Try to access profile (should fail)
+      const profileResponse = await request(app)
+        .get('/auth/profile')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(profileResponse.status).toBe(404);
+
+      // Step 5: Verify user is deleted from database
+      const deletedUser = await User.findOne({ email: 'delete@example.com' });
+      expect(deletedUser).toBeNull();
+    });
+  });
+});
