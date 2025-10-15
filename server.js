@@ -9,7 +9,7 @@ connectDB();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ["https://boardly-chi.vercel.app/", "http://localhost:5173"], // update with frontend URL in production
+    origin: ["https://boardly-chi.vercel.app", "http://localhost:5173"], // update with frontend URL in production
     credentials: true,
     transports: ['websocket', 'polling'] // Allow both transports
   },

@@ -12,8 +12,8 @@ dotenv.config();
 
 const app = express();
 app.use(cors({
-  credentials: true,
-  origin: process.env.FRONTEND_URL
+  origin: ["https://boardly-chi.vercel.app", "http://localhost:5173"],
+  credentials: true
 }));
 app.use(cookieParser());
 app.use(express.json({
