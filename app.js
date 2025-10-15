@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import roomRoutes from './routes/roomRoutes.js';
 import pdfRoutes from './routes/pdfRoutes.js';
@@ -10,7 +11,11 @@ import paystackRoutes from './routes/paystackRoutes.js';
 dotenv.config();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  credentials: true,
+  origin: process.env.FRONTEND_URL
+}));
+app.use(cookieParser());
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf;

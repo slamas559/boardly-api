@@ -4,7 +4,7 @@ import multer from "multer";
 import axios from "axios";
 import { v2 as cloudinary } from "cloudinary";
 import User from "../models/User.js";
-import { generateToken } from "../utils/auth.js";
+import { generateToken, setTokenCookie, clearTokenCookie } from "../utils/auth.js";
 import { imageStorage } from "../config/cloudinary.js";
 import { protect } from "../utils/auth.js";
 import Room from "../models/Room.js";
@@ -15,18 +15,14 @@ import crypto from 'crypto';
 import { sendVerificationEmail } from "../utils/email.js";
 import 'dotenv/config';
 
-
-
 const router = express.Router();
 const upload = multer({ storage: imageStorage });
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-
-const EMAIL_USER = process.env.EMAIL_USER; // your email
-const EMAIL_PASS = process.env.EMAIL_PASS; // your email app password
+const EMAIL_USER = process.env.EMAIL_USER;
+const EMAIL_PASS = process.env.EMAIL_PASS;
 const FRONTEND_URL = process.env.FRONTEND_URL;
-
 
 // Function to create Paystack subaccount
 const createPaystackSubaccount = async (userData) => {
@@ -34,7 +30,7 @@ const createPaystackSubaccount = async (userData) => {
   try {
     const response = await axios.post('https://api.paystack.co/subaccount', {
       business_name: `${userData.name} - Teaching Account`,
-      settlement_bank: userData.bankCode, //"058",
+      settlement_bank: userData.bankCode,
       account_number: userData.accountNumber,
       percentage_charge: 70,
       description: `Subaccount for tutor: ${userData.name}`,
@@ -67,16 +63,16 @@ router.get(
     session: false,
   }),
   (req, res) => {
-    const token = req.user.generateJWT(); // Create your own JWT method on user model
-    res.redirect(`http://${FRONTEND_URL}/auth-success?token=${token}`);
+    const token = req.user.generateJWT();
+    setTokenCookie(res, token);
+    res.redirect(`http://${FRONTEND_URL}/auth-success`);
   }
 );
 
 // POST /auth/google - Google OAuth authentication
-// In your auth routes file, add this simplified Google auth route:
 router.post("/google", async (req, res) => {
   try {
-    const { credential, role, userInfo, context } = req.body; // Add context
+    const { credential, role, userInfo, context } = req.body;
     
     if (!credential || !userInfo) {
       return res.status(400).json({ message: "Google credential and user info are required" });
@@ -84,7 +80,6 @@ router.post("/google", async (req, res) => {
 
     const { email, name, picture, googleId } = userInfo;
 
-    // Check if user already exists
     let user = await User.findOne({ 
       $or: [
         { email: email },
@@ -93,20 +88,22 @@ router.post("/google", async (req, res) => {
     });
 
     if (context === 'login') {
-      // LOGIN CONTEXT: User must exist
       if (!user) {
         return res.status(404).json({ 
           message: "No account found",
           shouldRedirectToRegister: true 
         });
       }
-      if (user){
-        if(!user.googleId){
-          return res.status(404).json({message:"Type in your gmail and password please!"})
+      if (user) {
+        if (!user.googleId) {
+          return res.status(404).json({ message: "Type in your gmail and password please!" })
         }
-        // User exists, log them in
+        
+        const token = generateToken(user._id);
+        setTokenCookie(res, token);
+        
         return res.json({
-          token: generateToken(user._id),
+          success: true,
           user: {
             _id: user._id,
             name: user.name,
@@ -117,7 +114,6 @@ router.post("/google", async (req, res) => {
       }
       
     } else if (context === 'register') {
-      // REGISTER CONTEXT: Create new user or reject if exists
       if (user) {
         return res.status(400).json({ 
           message: "Email already exists.",
@@ -125,7 +121,6 @@ router.post("/google", async (req, res) => {
         });
       }
 
-      // Create new user
       const hashedPassword = await bcrypt.hash(Math.random().toString(36), 12);
       user = new User({
         name,
@@ -139,8 +134,11 @@ router.post("/google", async (req, res) => {
 
       await user.save();
 
+      const token = generateToken(user._id);
+      setTokenCookie(res, token);
+
       return res.json({
-        token: generateToken(user._id),
+        success: true,
         user: {
           _id: user._id,
           name: user.name,
@@ -156,7 +154,6 @@ router.post("/google", async (req, res) => {
   }
 });
 
-
 // POST /auth/register
 router.post("/register", upload.single("avatar"), async (req, res) => {
   const { name, email, password, bio, role } = req.body;
@@ -165,20 +162,16 @@ router.post("/register", upload.single("avatar"), async (req, res) => {
   console.log("Registration data:", { name, email, bio, role, avatar: !!avatar });
   
   try {
-    // Check if user already exists
     const existing = await User.findOne({ email });
     if (existing) {
       return res.status(400).json({ message: "Email already exists" });
     }
 
-    // Hash password
     const hashed = await bcrypt.hash(password, 12);
     
-    // Generate verification token
     const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    // Create user (unverified)
     const user = new User({ 
       name, 
       email, 
@@ -193,18 +186,15 @@ router.post("/register", upload.single("avatar"), async (req, res) => {
     
     await user.save();
 
-    // Send verification email
     const emailSent = await sendVerificationEmail(email, verificationToken, name);
     
     if (!emailSent) {
-      // If email fails, delete the user and return error
       await User.findByIdAndDelete(user._id);
       return res.status(500).json({ 
         message: "Failed to send verification email. Please try again." 
       });
     }
 
-    // Return success response (don't send token yet)
     res.status(201).json({ 
       message: "Registration successful! Please check your email to verify your account.",
       email: email,
@@ -217,7 +207,7 @@ router.post("/register", upload.single("avatar"), async (req, res) => {
   }
 });
 
-//Email verification route
+// Email verification route
 router.get("/verify-email", async (req, res) => {
   try {
     const { token } = req.query;
@@ -226,7 +216,6 @@ router.get("/verify-email", async (req, res) => {
       return res.status(400).json({ message: "Verification token is required" });
     }
 
-    // Find user with this token
     const user = await User.findOne({
       emailVerificationToken: token,
       emailVerificationExpires: { $gt: Date.now() }
@@ -238,19 +227,17 @@ router.get("/verify-email", async (req, res) => {
       });
     }
 
-    // Update user as verified
     user.emailVerified = true;
     user.emailVerificationToken = undefined;
     user.emailVerificationExpires = undefined;
     await user.save();
 
-    // Generate JWT token
     const jwtToken = generateToken(user._id);
+    setTokenCookie(res, jwtToken);
 
     res.json({
       success: true,
       message: "Email verified successfully! You can now access your account.",
-      token: jwtToken,
       user: {
         _id: user._id,
         name: user.name,
@@ -280,7 +267,6 @@ router.post("/resend-verification", async (req, res) => {
       return res.status(400).json({ message: "Email is required" });
     }
 
-    // Find unverified user
     const user = await User.findOne({ 
       email, 
       emailVerified: false 
@@ -292,7 +278,6 @@ router.post("/resend-verification", async (req, res) => {
       });
     }
 
-    // Generate new verification token
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
@@ -300,7 +285,6 @@ router.post("/resend-verification", async (req, res) => {
     user.emailVerificationExpires = verificationExpires;
     await user.save();
 
-    // Send verification email
     const emailSent = await sendVerificationEmail(email, verificationToken, user.name);
     
     if (!emailSent) {
@@ -330,7 +314,6 @@ router.post("/login", async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
     
-    // Check if user is a Google user trying to login with password
     if (user.googleId) {
       return res.status(400).json({ 
         message: "This account uses Google Sign-In. Please use Google authentication.",
@@ -338,13 +321,11 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // Verify password
     const match = await bcrypt.compare(password, user.password);
     if (!match) {
       return res.status(401).json({ message: "Incorrect password" });
     }
 
-    // Check email verification for non-Google users
     if (!user.googleId && !user.emailVerified) {
       return res.status(403).json({ 
         message: "Please verify your email before logging in. Check your inbox for the verification link.",
@@ -353,9 +334,11 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // Login successful
+    const token = generateToken(user._id);
+    setTokenCookie(res, token);
+
     res.json({ 
-      token: generateToken(user._id), 
+      success: true,
       user: {
         _id: user._id,
         name: user.name,
@@ -377,7 +360,29 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// GET /auth/banks - Get list of Nigerian banks for account setup
+// POST /auth/logout
+router.post("/logout", (req, res) => {
+  console.log("User logged out, cookie cleared");
+
+  clearTokenCookie(res);
+  res.json({ success: true, message: "Logged out successfully" });
+});
+
+// GET /auth/check-auth - Check if user is authenticated
+router.get("/check-auth", protect, (req, res) => {
+  res.json({ 
+    authenticated: true,
+    user: {
+      _id: req.user._id,
+      name: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      avatar: req.user.avatar
+    }
+  });
+});
+
+// GET /auth/banks
 router.get("/banks", async (req, res) => {
   try {
     const response = await axios.get('https://api.paystack.co/bank', {
@@ -399,11 +404,12 @@ router.get("/banks", async (req, res) => {
   }
 });
 
-// POST /auth/resolve-account - Resolve bank account details
+// POST /auth/resolve-account
 router.post("/resolve-account", protect, async (req, res) => {
   try {
     const { bankCode, accountNumber } = req.body;
     console.log('Resolving account:', bankCode, accountNumber);
+    
     if (!bankCode || !accountNumber) {
       return res.status(400).json({ 
         success: false, 
@@ -449,7 +455,7 @@ router.post("/resolve-account", protect, async (req, res) => {
   }
 });
 
-// POST /auth/setup-bank - Setup bank account for tutor
+// POST /auth/setup-bank
 router.post("/setup-bank", protect, async (req, res) => {
   try {
     const { bankCode, accountNumber } = req.body;
@@ -528,8 +534,6 @@ router.post("/setup-bank", protect, async (req, res) => {
   }
 });
 
-// ... rest of your existing routes remain the same ...
-
 router.get("/", async (req, res) => {
   const users = await User.find();
   res.json(users)
@@ -596,7 +600,6 @@ router.put("/profile", protect, upload.single("avatar"), async (req, res) => {
       user.avatar = req.file.path;
     }
 
-    // Only handle password updates for non-Google users
     if (currentPassword && newPassword && !user.googleId) {
       const isMatch = await bcrypt.compare(currentPassword, user.password);
       if (!isMatch) {
@@ -635,6 +638,7 @@ router.put("/profile", protect, upload.single("avatar"), async (req, res) => {
 router.delete("/profile", protect, async (req, res) => {
   try {
     await User.findByIdAndDelete(req.user.id);
+    clearTokenCookie(res);
     res.json({ message: "Account deleted successfully" });
   } catch (error) {
     console.error("Account deletion error:", error);

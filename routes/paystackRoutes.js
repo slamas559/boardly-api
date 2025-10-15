@@ -109,7 +109,7 @@ router.post('/initiate', protect, async (req, res) => {
       callback_url: callbackUrl,
       subaccount: room.creator.paystackSubaccountCode,
       transaction_charge: Math.round(amount * 0.3), // Platform gets 30%
-      bearer: 'subaccount', // Subaccount bears Paystack fees
+      // bearer: 'subaccount', // Subaccount bears Paystack fees
       metadata: {
         roomId: room._id.toString(),
         studentId: user._id.toString(),
