@@ -26,7 +26,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL;
 
 // Function to create Paystack subaccount
 const createPaystackSubaccount = async (userData) => {
-  console.log(`userData`, userData)
+  // console.log(`userData`, userData)
   try {
     const response = await axios.post('https://api.paystack.co/subaccount', {
       business_name: `${userData.name} - Teaching Account`,
@@ -362,7 +362,6 @@ router.post("/login", async (req, res) => {
 
 // POST /auth/logout
 router.post("/logout", (req, res) => {
-  console.log("User logged out, cookie cleared");
 
   clearTokenCookie(res);
   res.json({ success: true, message: "Logged out successfully" });

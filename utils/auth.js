@@ -1,7 +1,9 @@
 // utils/auth.js
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
-import 'dotenv/config';
+import dotenv from "dotenv";
+
+dotenv.config();
 
 // generate JWT
 export const generateToken = (userId) => {
@@ -13,23 +15,23 @@ export const setTokenCookie = (res, token) => {
   res.cookie('token', token, {
     httpOnly: true, // Cannot be accessed by JavaScript
     secure: process.env.NODE_ENV === 'production', // Only HTTPS in production
-    sameSite: 'strict', // CSRF protection
+    sameSite: 'lax', // CSRF protection
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
-    path: '/'
+    path: '/',
+    domain: process.env.NODE_ENV === 'production' ? '.boardly-chi.vercel.app' : undefined 
   });
 };
 
 // Helper to clear cookie
 export const clearTokenCookie = (res) => {
-  console.log("whyyyy....")
   res.cookie('token', '', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: 'lax',
     maxAge: 0,
-    path: '/'
+    path: '/',
+    domain: process.env.NODE_ENV === 'production' ? '.boardly-chi.vercel.app' : undefined 
   });
-  console.log(process.env.NODE_ENV," - Cookie cleared" );
 };
 
 // protect middleware - now reads from cookies
