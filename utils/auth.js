@@ -15,10 +15,9 @@ export const setTokenCookie = (res, token) => {
   res.cookie('token', token, {
     httpOnly: true, // Cannot be accessed by JavaScript
     secure: process.env.NODE_ENV === 'production', // Only HTTPS in production
-    sameSite: 'lax', // CSRF protection
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // CSRF protection
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
     path: '/',
-    domain: process.env.NODE_ENV === 'production' ? '.boardly-chi.vercel.app' : undefined 
   });
 };
 
@@ -27,10 +26,9 @@ export const clearTokenCookie = (res) => {
   res.cookie('token', '', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: 0,
     path: '/',
-    domain: process.env.NODE_ENV === 'production' ? '.boardly-chi.vercel.app' : undefined 
   });
 };
 
