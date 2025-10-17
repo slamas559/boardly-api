@@ -30,15 +30,18 @@ app.use(cors({
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  maxAge: 86400 // 24 hours
 }));
 
 app.use(cookieParser());
 app.use(express.json({
+  limit: '50mb',
   verify: (req, res, buf) => {
     req.rawBody = buf;
   }
 }));
+
 
 app.use("/rooms", roomRoutes);
 app.use("/pdf", pdfRoutes);
