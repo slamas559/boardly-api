@@ -119,10 +119,16 @@ router.get("/state/:roomId", protect, async (req, res) => {
   }
 });
 
-// POST /pdf/save-state - Save PDF state
+// POST /pdf/save-state - Save PDF state (FIXED VERSION)
 router.post("/save-state", protect, async (req, res) => {
   try {
     const { roomId, currentPage, annotations } = req.body;
+
+    console.log("📝 Saving PDF state:", {
+      roomId,
+      currentPage,
+      annotationsCount: annotations?.length || 0
+    });
 
     // Validate room ID
     if (!roomId) {
@@ -136,51 +142,50 @@ router.post("/save-state", protect, async (req, res) => {
       return res.status(404).json({ error: "Room not found" });
     }
 
-    // Process annotations
-    let updatedAnnotations = room.pdf?.annotations || [];
-    
-    if (Array.isArray(annotations)) {
-      annotations.forEach(newAnnotation => {
-        // Check if this is a deletion request
-        if (newAnnotation.removed) {
-          updatedAnnotations = updatedAnnotations.filter(a => a.id !== newAnnotation.id);
-          return;
-        }
-        
-        const existingIndex = updatedAnnotations.findIndex(a => a.id === newAnnotation.id);
-        
-        if (existingIndex >= 0) {
-          // Update existing annotation
-          updatedAnnotations[existingIndex] = newAnnotation;
-        } else {
-          // Add new annotation with unique ID if missing
-          if (!newAnnotation.id) {
-            newAnnotation.id = Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
-          }
-          updatedAnnotations.push(newAnnotation);
-        }
-      });
+    // Initialize pdf object if it doesn't exist
+    if (!room.pdf) {
+      room.pdf = {
+        url: "",
+        currentPage: 1,
+        annotations: []
+      };
     }
 
-    // Update room
-    await Room.findByIdAndUpdate(
-      roomId,
-      {
-        $set: {
-          "pdf.currentPage": currentPage || 1,
-          "pdf.annotations": updatedAnnotations,
-        },
-      },
-      { new: true }
-    );
+    // Update current page if provided
+    if (currentPage !== undefined && currentPage !== null) {
+      room.pdf.currentPage = currentPage;
+    }
+
+    // Update annotations if provided
+    if (Array.isArray(annotations)) {
+      // Filter out any annotations marked as removed
+      const validAnnotations = annotations.filter(a => !a.removed);
+      
+      console.log("✅ Filtered annotations:", {
+        received: annotations.length,
+        valid: validAnnotations.length,
+        removed: annotations.length - validAnnotations.length
+      });
+      
+      room.pdf.annotations = validAnnotations;
+    }
+
+    // Mark the pdf field as modified to ensure Mongoose saves it
+    room.markModified('pdf');
+    
+    // Save to database
+    await room.save();
+
+    console.log("✅ PDF state saved successfully");
 
     res.json({ 
       success: true,
-      message: "PDF state saved"
+      message: "PDF state saved",
+      annotationsCount: room.pdf.annotations.length
     });
 
   } catch (error) {
-    console.error("Error saving PDF state:", error);
+    console.error("❌ Error saving PDF state:", error);
     res.status(500).json({ 
       error: "Failed to save PDF state",
       details: process.env.NODE_ENV === "development" ? error.message : undefined
