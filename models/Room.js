@@ -12,6 +12,12 @@ const roomSchema = new mongoose.Schema({
     annotations: { type: Array, default: [] },
   },
 
+  // Vector whiteboard: every drawn thing is an object with a page index
+  board: {
+    objects: { type: Array, default: [] },
+    pageCount: { type: Number, default: 1 },
+  },
+
   currentView: { type: String, default: "whiteboard" },
   qaEnabled: { type: Boolean, default: false },
   whiteboardImage: { type: String, default: null },

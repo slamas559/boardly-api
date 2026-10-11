@@ -36,9 +36,18 @@ router.get("/", protect, async (req, res) => {
 });
 
 // PUT /rooms/:roomId/view
-router.put("/:roomId/view", async (req, res) => {
+router.put("/:roomId/view", protect, async (req, res) => {
   const { view } = req.body;
-  await Room.findByIdAndUpdate(req.params.roomId, { currentView: view });
+  if (!["whiteboard", "pdf"].includes(view)) {
+    return res.status(400).json({ message: "Invalid view" });
+  }
+  const room = await Room.findById(req.params.roomId);
+  if (!room) return res.status(404).json({ message: "Room not found" });
+  if (room.creator.toString() !== req.user.id.toString()) {
+    return res.status(403).json({ message: "Only the room creator can change the view" });
+  }
+  room.currentView = view;
+  await room.save();
   res.sendStatus(200);
 });
 
@@ -241,7 +250,6 @@ router.get('/:code/public', async (req, res) => {
       pdf: room.pdf,
       currentView: room.currentView,
       qaEnabled: room.qaEnabled,
-      whiteboardImage: room.whiteboardImage,
       duration: room.duration,
       // For anonymous users
       hasPaid: !room.isPaid, // true for free rooms, false for paid rooms

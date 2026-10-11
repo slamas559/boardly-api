@@ -6,13 +6,38 @@ import chatEvents from "./chat.js";
 import viewEvents from "./view.js";
 import qaEvents from "./qa.js";
 import Room from "../models/Room.js";
+import jwt from "jsonwebtoken";
+import { getRoomState, serializeState, releaseRoomState } from "./roomState.js";
+import { markHost } from "./permissions.js";
 
 const joinedRooms = new Map(); // socket.id -> roomId
 const roomUsers = new Map(); // roomId -> Set of user objects {socketId, userId, name, isTutor}
 export const activeUsers = new Map(); // userId -> {socketId, roomId, timestamp}
 
 
+// Read the same HTTP-only JWT cookie the REST API uses, so the server knows who a socket is.
+function readCookie(header = "", name) {
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return null;
+}
+
 export default function socketManager(io) {
+  io.use((socket, next) => {
+    try {
+      const token = readCookie(socket.handshake.headers.cookie, "token");
+      if (token) {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        socket.data.userId = String(decoded.id);
+      }
+    } catch {
+      // Invalid or expired token: connect as a guest (listener)
+    }
+    next();
+  });
+
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
@@ -37,20 +62,19 @@ export default function socketManager(io) {
         socket.join(roomId);
         joinedRooms.set(socket.id, roomId);
         
-        // Add user to room tracking
-        addUserToRoom(socket.id, roomId, user);
-        // console.log(`Added user to room ${roomId}:`, user);
-        // checkUserInRoom(roomId, user.id)
-        console.log(`Socket ${socket.id} (${user.name}) joined room ${roomId}`);
+        // Decide host status on the server: the verified user must be the room's creator
+        const state = await getRoomState(roomId);
+        const isHost = Boolean(state && socket.data.userId && state.creatorId === socket.data.userId);
+        if (isHost) markHost(socket, roomId);
 
-        // Send current view to the user
-        try {
-          const room = await Room.findById(roomId).lean();
-          if (room?.currentView) { 
-            socket.emit("change-view", room.currentView);
-          }
-        } catch (dbError) {
-          console.error("Error fetching room:", dbError);
+        // Add user to room tracking (isTutor is server-verified, never client-claimed)
+        addUserToRoom(socket.id, roomId, { ...user, isTutor: isHost });
+        console.log(`Socket ${socket.id} (${user.name}) joined room ${roomId} as ${isHost ? "host" : "listener"}`);
+
+        // Send the full live state so late joiners see exactly what everyone else sees
+        if (state) {
+          socket.emit("room-state", { ...serializeState(state), isHost });
+          socket.emit("change-view", state.view);
         }
 
         // Broadcast updated user count to all users in the room
@@ -63,14 +87,6 @@ export default function socketManager(io) {
       } catch (error) {
         console.error("Error in join-room:", error);
       }
-    });
-
-    socket.on("tutor-cursor-move", (cursorData) => {
-      socket.to(cursorData.room).emit("tutor-cursor-move", cursorData);
-    });
-
-    socket.on("tutor-cursor-move-pdf", (cursorData) => {
-      socket.to(cursorData.room).emit("tutor-cursor-move-pdf", cursorData);
     });
 
     // Initialize all socket event handlers
@@ -164,9 +180,10 @@ function removeUserFromRoom(socketId, roomId) {
       }
     }
     
-    // Clean up empty room
+    // Clean up empty room and persist its live state
     if (roomUserSet.size === 0) {
       roomUsers.delete(roomId);
+      releaseRoomState(roomId).catch((err) => console.error("Failed to release room state:", err.message));
     }
   }
 }

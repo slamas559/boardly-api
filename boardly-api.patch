@@ -1,0 +1,960 @@
+diff --git a/models/Room.js b/models/Room.js
+index a111f1b..d0ada4d 100644
+--- a/models/Room.js
++++ b/models/Room.js
+@@ -12,6 +12,12 @@ const roomSchema = new mongoose.Schema({
+     annotations: { type: Array, default: [] },
+   },
+ 
++  // Vector whiteboard: every drawn thing is an object with a page index
++  board: {
++    objects: { type: Array, default: [] },
++    pageCount: { type: Number, default: 1 },
++  },
++
+   currentView: { type: String, default: "whiteboard" },
+   qaEnabled: { type: Boolean, default: false },
+   whiteboardImage: { type: String, default: null },
+diff --git a/package.json b/package.json
+index c7ad8e4..7de8d98 100644
+--- a/package.json
++++ b/package.json
+@@ -44,6 +44,7 @@
+     "jest": "^30.2.0",
+     "mongodb-memory-server": "^10.2.3",
+     "nodemon": "^3.1.10",
++    "socket.io-client": "^4.8.4",
+     "supertest": "^7.1.4"
+   }
+ }
+diff --git a/routes/pdfRoutes.js b/routes/pdfRoutes.js
+index 45d1e1e..3468ecc 100644
+--- a/routes/pdfRoutes.js
++++ b/routes/pdfRoutes.js
+@@ -6,6 +6,7 @@ import PDF from "../models/PDF.js";
+ import { protect } from "../utils/auth.js";
+ import Room from "../models/Room.js";
+ import dotenv from "dotenv";
++import { resetPdfState } from "../sockets/roomState.js";
+ 
+ dotenv.config();
+ 
+@@ -66,6 +67,7 @@ router.post("/upload/:roomId", protect, upload.single("pdf"), async (req, res) =
+     };
+     
+     await room.save();
++    resetPdfState(roomId, pdfUrl);
+ 
+     // Also save to PDF model for reference
+     await PDF.create({
+@@ -119,77 +121,35 @@ router.get("/state/:roomId", protect, async (req, res) => {
+   }
+ });
+ 
+-// POST /pdf/save-state - Save PDF state (FIXED VERSION)
++// POST /pdf/save-state - Save the current page (annotations are persisted live by the socket layer)
+ router.post("/save-state", protect, async (req, res) => {
+   try {
+-    const { roomId, currentPage, annotations } = req.body;
++    const { roomId, currentPage } = req.body;
+ 
+-    console.log("📝 Saving PDF state:", {
+-      roomId,
+-      currentPage,
+-      annotationsCount: annotations?.length || 0
+-    });
+-
+-    // Validate room ID
+     if (!roomId) {
+       return res.status(400).json({ error: "Room ID is required" });
+     }
+ 
+-    // Find room
+     const room = await Room.findById(roomId);
+-    
+     if (!room) {
+       return res.status(404).json({ error: "Room not found" });
+     }
+ 
+-    // Initialize pdf object if it doesn't exist
+-    if (!room.pdf) {
+-      room.pdf = {
+-        url: "",
+-        currentPage: 1,
+-        annotations: []
+-      };
++    if (room.creator.toString() !== req.user._id.toString()) {
++      return res.status(403).json({ error: "Only the room creator can save PDF state" });
+     }
+ 
+-    // Update current page if provided
+-    if (currentPage !== undefined && currentPage !== null) {
++    if (Number.isInteger(currentPage) && currentPage >= 1) {
++      room.pdf = room.pdf || { url: "", currentPage: 1, annotations: [] };
+       room.pdf.currentPage = currentPage;
++      room.markModified("pdf");
++      await room.save();
+     }
+ 
+-    // Update annotations if provided
+-    if (Array.isArray(annotations)) {
+-      // Filter out any annotations marked as removed
+-      const validAnnotations = annotations.filter(a => !a.removed);
+-      
+-      console.log("✅ Filtered annotations:", {
+-        received: annotations.length,
+-        valid: validAnnotations.length,
+-        removed: annotations.length - validAnnotations.length
+-      });
+-      
+-      room.pdf.annotations = validAnnotations;
+-    }
+-
+-    // Mark the pdf field as modified to ensure Mongoose saves it
+-    room.markModified('pdf');
+-    
+-    // Save to database
+-    await room.save();
+-
+-    console.log("✅ PDF state saved successfully");
+-
+-    res.json({ 
+-      success: true,
+-      message: "PDF state saved",
+-      annotationsCount: room.pdf.annotations.length
+-    });
+-
++    res.json({ success: true, message: "PDF state saved" });
+   } catch (error) {
+-    console.error("❌ Error saving PDF state:", error);
+-    res.status(500).json({ 
+-      error: "Failed to save PDF state",
+-      details: process.env.NODE_ENV === "development" ? error.message : undefined
+-    });
++    console.error("Error saving PDF state:", error);
++    res.status(500).json({ error: "Failed to save PDF state" });
+   }
+ });
+ 
+diff --git a/routes/roomRoutes.js b/routes/roomRoutes.js
+index d2a55a4..1a7a998 100644
+--- a/routes/roomRoutes.js
++++ b/routes/roomRoutes.js
+@@ -36,9 +36,18 @@ router.get("/", protect, async (req, res) => {
+ });
+ 
+ // PUT /rooms/:roomId/view
+-router.put("/:roomId/view", async (req, res) => {
++router.put("/:roomId/view", protect, async (req, res) => {
+   const { view } = req.body;
+-  await Room.findByIdAndUpdate(req.params.roomId, { currentView: view });
++  if (!["whiteboard", "pdf"].includes(view)) {
++    return res.status(400).json({ message: "Invalid view" });
++  }
++  const room = await Room.findById(req.params.roomId);
++  if (!room) return res.status(404).json({ message: "Room not found" });
++  if (room.creator.toString() !== req.user.id.toString()) {
++    return res.status(403).json({ message: "Only the room creator can change the view" });
++  }
++  room.currentView = view;
++  await room.save();
+   res.sendStatus(200);
+ });
+ 
+@@ -241,7 +250,6 @@ router.get('/:code/public', async (req, res) => {
+       pdf: room.pdf,
+       currentView: room.currentView,
+       qaEnabled: room.qaEnabled,
+-      whiteboardImage: room.whiteboardImage,
+       duration: room.duration,
+       // For anonymous users
+       hasPaid: !room.isPaid, // true for free rooms, false for paid rooms
+diff --git a/sockets/boardOps.js b/sockets/boardOps.js
+new file mode 100644
+index 0000000..7ac3202
+--- /dev/null
++++ b/sockets/boardOps.js
+@@ -0,0 +1,138 @@
++// sockets/boardOps.js
++// Pure helpers for validating and applying whiteboard / PDF-annotation operations.
++// Objects live in a Map keyed by id so add/update/remove are O(1).
++
++export const OBJECT_TYPES = new Set([
++  "stroke",     // freehand pen / highlighter
++  "shape",      // rect, ellipse, diamond, line, arrow
++  "text",       // text box
++  "markup",     // PDF text markup (highlight / underline / strikethrough)
++  "highlight",  // legacy PDF highlight (percent rects) - kept so old data still loads
++]);
++
++export const LIMITS = {
++  maxObjects: 20000,
++  maxPoints: 20000,
++  maxTextLength: 5000,
++  maxRects: 400,
++  maxPage: 499,
++  maxPatchBytes: 200 * 1024,
++};
++
++const isFiniteNum = (n) => typeof n === "number" && Number.isFinite(n);
++
++export function validateObject(obj) {
++  if (!obj || typeof obj !== "object") return false;
++  if (typeof obj.id !== "string" || obj.id.length === 0 || obj.id.length > 48) return false;
++  if (!OBJECT_TYPES.has(obj.type)) return false;
++  if (obj.page !== undefined && !(Number.isInteger(obj.page) && obj.page >= 0 && obj.page <= LIMITS.maxPage)) {
++    // PDF pages are 1-based, board pages 0-based; both are small non-negative integers
++    return false;
++  }
++  if (obj.type === "stroke") {
++    if (!Array.isArray(obj.points) || obj.points.length > LIMITS.maxPoints) return false;
++  }
++  if (obj.type === "text" && typeof obj.text === "string" && obj.text.length > LIMITS.maxTextLength) return false;
++  if (obj.type === "markup" && (!Array.isArray(obj.rects) || obj.rects.length > LIMITS.maxRects)) return false;
++  if (obj.type === "shape") {
++    for (const k of ["x", "y", "w", "h", "x1", "y1", "x2", "y2"]) {
++      if (obj[k] !== undefined && !isFiniteNum(obj[k])) return false;
++    }
++  }
++  return true;
++}
++
++function patchIsSafe(patch) {
++  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return false;
++  if ("id" in patch || "type" in patch) return false;
++  try {
++    return JSON.stringify(patch).length <= LIMITS.maxPatchBytes;
++  } catch {
++    return false;
++  }
++}
++
++/**
++ * Apply a list of ops to `objects` (Map<string, object>) in place.
++ * Returns only the ops that were valid and applied, so they can be safely relayed.
++ */
++export function applyOps(objects, ops) {
++  const applied = [];
++  if (!Array.isArray(ops)) return applied;
++
++  for (const op of ops.slice(0, 500)) {
++    if (!op || typeof op !== "object") continue;
++
++    switch (op.op) {
++      case "add": {
++        if (!validateObject(op.obj)) break;
++        if (!objects.has(op.obj.id) && objects.size >= LIMITS.maxObjects) break;
++        objects.set(op.obj.id, op.obj);
++        applied.push(op);
++        break;
++      }
++      case "update": {
++        const existing = objects.get(op.id);
++        if (!existing || !patchIsSafe(op.patch)) break;
++        const next = { ...existing, ...op.patch };
++        if (!validateObject(next)) break;
++        objects.set(op.id, next);
++        applied.push({ op: "update", id: op.id, patch: op.patch });
++        break;
++      }
++      case "remove": {
++        if (typeof op.id === "string" && objects.delete(op.id)) {
++          applied.push({ op: "remove", id: op.id });
++        }
++        break;
++      }
++      case "clear": {
++        // Remove every object on a page (or everything when page is omitted)
++        const page = op.page;
++        for (const [id, o] of objects) {
++          if (page === undefined || o.page === page) objects.delete(id);
++        }
++        applied.push({ op: "clear", page });
++        break;
++      }
++      default:
++        break;
++    }
++  }
++  return applied;
++}
++
++/**
++ * Streaming freehand strokes: the first message carries `meta` (style), later ones only points.
++ * The stroke is created/extended immediately so the stored state is always consistent.
++ * Returns the stroke object, or null when the message is rejected.
++ */
++export function applyStrokeChunk(objects, { id, page, meta, points }) {
++  if (typeof id !== "string" || id.length === 0 || id.length > 48) return null;
++  if (!Array.isArray(points) || points.length > 500) return null;
++
++  let stroke = objects.get(id);
++  if (!stroke) {
++    if (!meta || typeof meta !== "object") return null;
++    if (objects.size >= LIMITS.maxObjects) return null;
++    stroke = {
++      id,
++      type: "stroke",
++      page: Number.isInteger(page) ? page : 0,
++      tool: meta.tool === "highlighter" ? "highlighter" : "pen",
++      color: typeof meta.color === "string" ? meta.color.slice(0, 40) : "#000000",
++      width: isFiniteNum(meta.width) ? meta.width : 3,
++      opacity: isFiniteNum(meta.opacity) ? meta.opacity : 1,
++      points: [],
++    };
++  }
++  if (stroke.type !== "stroke") return null;
++  if (stroke.points.length + points.length > LIMITS.maxPoints) return null;
++
++  const clean = points.filter(
++    (p) => Array.isArray(p) && isFiniteNum(p[0]) && isFiniteNum(p[1])
++  );
++  stroke = { ...stroke, points: stroke.points.concat(clean) };
++  objects.set(id, stroke);
++  return stroke;
++}
+diff --git a/sockets/index.js b/sockets/index.js
+index 103a3eb..f2d5644 100644
+--- a/sockets/index.js
++++ b/sockets/index.js
+@@ -6,13 +6,38 @@ import chatEvents from "./chat.js";
+ import viewEvents from "./view.js";
+ import qaEvents from "./qa.js";
+ import Room from "../models/Room.js";
++import jwt from "jsonwebtoken";
++import { getRoomState, serializeState, releaseRoomState } from "./roomState.js";
++import { markHost } from "./permissions.js";
+ 
+ const joinedRooms = new Map(); // socket.id -> roomId
+ const roomUsers = new Map(); // roomId -> Set of user objects {socketId, userId, name, isTutor}
+ export const activeUsers = new Map(); // userId -> {socketId, roomId, timestamp}
+ 
+ 
++// Read the same HTTP-only JWT cookie the REST API uses, so the server knows who a socket is.
++function readCookie(header = "", name) {
++  for (const part of header.split(";")) {
++    const [key, ...rest] = part.trim().split("=");
++    if (key === name) return decodeURIComponent(rest.join("="));
++  }
++  return null;
++}
++
+ export default function socketManager(io) {
++  io.use((socket, next) => {
++    try {
++      const token = readCookie(socket.handshake.headers.cookie, "token");
++      if (token) {
++        const decoded = jwt.verify(token, process.env.JWT_SECRET);
++        socket.data.userId = String(decoded.id);
++      }
++    } catch {
++      // Invalid or expired token: connect as a guest (listener)
++    }
++    next();
++  });
++
+   io.on("connection", (socket) => {
+     console.log("User connected:", socket.id);
+ 
+@@ -37,20 +62,19 @@ export default function socketManager(io) {
+         socket.join(roomId);
+         joinedRooms.set(socket.id, roomId);
+         
+-        // Add user to room tracking
+-        addUserToRoom(socket.id, roomId, user);
+-        // console.log(`Added user to room ${roomId}:`, user);
+-        // checkUserInRoom(roomId, user.id)
+-        console.log(`Socket ${socket.id} (${user.name}) joined room ${roomId}`);
+-
+-        // Send current view to the user
+-        try {
+-          const room = await Room.findById(roomId).lean();
+-          if (room?.currentView) { 
+-            socket.emit("change-view", room.currentView);
+-          }
+-        } catch (dbError) {
+-          console.error("Error fetching room:", dbError);
++        // Decide host status on the server: the verified user must be the room's creator
++        const state = await getRoomState(roomId);
++        const isHost = Boolean(state && socket.data.userId && state.creatorId === socket.data.userId);
++        if (isHost) markHost(socket, roomId);
++
++        // Add user to room tracking (isTutor is server-verified, never client-claimed)
++        addUserToRoom(socket.id, roomId, { ...user, isTutor: isHost });
++        console.log(`Socket ${socket.id} (${user.name}) joined room ${roomId} as ${isHost ? "host" : "listener"}`);
++
++        // Send the full live state so late joiners see exactly what everyone else sees
++        if (state) {
++          socket.emit("room-state", { ...serializeState(state), isHost });
++          socket.emit("change-view", state.view);
+         }
+ 
+         // Broadcast updated user count to all users in the room
+@@ -65,14 +89,6 @@ export default function socketManager(io) {
+       }
+     });
+ 
+-    socket.on("tutor-cursor-move", (cursorData) => {
+-      socket.to(cursorData.room).emit("tutor-cursor-move", cursorData);
+-    });
+-
+-    socket.on("tutor-cursor-move-pdf", (cursorData) => {
+-      socket.to(cursorData.room).emit("tutor-cursor-move-pdf", cursorData);
+-    });
+-
+     // Initialize all socket event handlers
+     whiteboardEvents(socket, io);
+     pdfEvents(socket, io);
+@@ -164,9 +180,10 @@ function removeUserFromRoom(socketId, roomId) {
+       }
+     }
+     
+-    // Clean up empty room
++    // Clean up empty room and persist its live state
+     if (roomUserSet.size === 0) {
+       roomUsers.delete(roomId);
++      releaseRoomState(roomId).catch((err) => console.error("Failed to release room state:", err.message));
+     }
+   }
+ }
+diff --git a/sockets/pdf.js b/sockets/pdf.js
+index f8aae3c..7e39367 100644
+--- a/sockets/pdf.js
++++ b/sockets/pdf.js
+@@ -1,37 +1,44 @@
+ // sockets/pdf.js
++// Realtime PDF events. Host-only for everything that changes what listeners see.
++import { applyOps } from "./boardOps.js";
++import { getRoomState, markDirty } from "./roomState.js";
++import { requireHost } from "./permissions.js";
++
+ export default function pdfEvents(socket, io) {
+-  socket.on("pdf-page-change", ({ room, page }) => {
+-    socket.broadcast.to(room).emit("pdf-page-change", { page });
++  socket.on("pdf-page-change", async ({ room, page } = {}) => {
++    if (!requireHost(socket, room)) return;
++    if (!Number.isInteger(page) || page < 1 || page > 10000) return;
++    const state = await getRoomState(room);
++    if (state) {
++      state.pdf.currentPage = page;
++      markDirty(state);
++    }
++    socket.to(room).emit("pdf-page-change", { page });
+   });
+-  
+-  socket.on("pdf-updated", ({ url, room }) => {
+-    socket.broadcast.to(room).emit("pdf-updated", { url });
++
++  socket.on("pdf-updated", async ({ url, room } = {}) => {
++    if (!requireHost(socket, room)) return;
++    if (typeof url !== "string" || url.length > 2048) return;
++    const state = await getRoomState(room);
++    if (state) {
++      state.pdf.url = url;
++      state.pdf.currentPage = 1;
++      state.pdf.annotations = new Map();
++      markDirty(state);
++    }
++    socket.to(room).emit("pdf-updated", { url });
+   });
+-  
+-  socket.on("pdf-scroll", ({ roomId, scrollTop }) => {
+-    socket.broadcast.to(roomId).emit("pdf-scroll", { scrollTop });
+-    console.log(`PDF scroll in room ${roomId}: ${scrollTop}`);
++
++  // Annotation operations: add / update / remove / clear (same op format as the board)
++  socket.on("pdf-op", async ({ room, ops } = {}) => {
++    if (!requireHost(socket, room)) return;
++    const state = await getRoomState(room);
++    if (!state) return;
++
++    const applied = applyOps(state.pdf.annotations, ops);
++    if (applied.length === 0) return;
++
++    markDirty(state);
++    socket.to(room).emit("pdf-op", { ops: applied });
+   });
+-  
+-  // Handle PDF annotations - with proper removal support
+-  socket.on("pdf-annotation", ({ roomId, annotation }) => {
+-    console.log("📝 PDF annotation event:", {
+-      roomId,
+-      annotationId: annotation.id,
+-      removed: annotation.removed,
+-      type: annotation.type
+-    });
+-    
+-    // Broadcast to all other users in the room
+-    socket.to(roomId).emit("pdf-annotation", { annotation });
+-  });
+-  
+-  // Optional: Separate event for removing annotations
+-  socket.on("pdf-annotation-remove", ({ roomId, annotationId }) => {
+-    console.log("🗑️ PDF annotation remove:", { roomId, annotationId });
+-    
+-    socket.to(roomId).emit("pdf-annotation-removed", { 
+-      annotation: { id: annotationId, removed: true }
+-    });
+-  });
+-}
+\ No newline at end of file
++}
+diff --git a/sockets/permissions.js b/sockets/permissions.js
+new file mode 100644
+index 0000000..d55a2fe
+--- /dev/null
++++ b/sockets/permissions.js
+@@ -0,0 +1,19 @@
++// sockets/permissions.js
++// A socket is the host of a room only if the JWT cookie sent with the handshake belongs to the
++// room's creator. This is decided on the server at join-room; clients cannot claim it.
++
++export function markHost(socket, roomId) {
++  if (!socket.data.hostRooms) socket.data.hostRooms = new Set();
++  socket.data.hostRooms.add(String(roomId));
++}
++
++export function isHost(socket, roomId) {
++  return Boolean(roomId) && socket.data.hostRooms?.has(String(roomId)) === true;
++}
++
++/** True when the socket has joined the room and is its verified host. */
++export function requireHost(socket, roomId) {
++  if (!roomId || typeof roomId !== "string") return false;
++  if (!socket.rooms.has(roomId)) return false;
++  return isHost(socket, roomId);
++}
+diff --git a/sockets/roomState.js b/sockets/roomState.js
+new file mode 100644
+index 0000000..d45923c
+--- /dev/null
++++ b/sockets/roomState.js
+@@ -0,0 +1,130 @@
++// sockets/roomState.js
++// Authoritative live state for a room: board objects + PDF annotations.
++// Loaded lazily from MongoDB, mutated in memory by socket events, flushed back on a debounce.
++import Room from "../models/Room.js";
++
++const FLUSH_DELAY_MS = 2000;
++const states = new Map(); // roomId -> state
++const loading = new Map(); // roomId -> Promise<state>
++
++function toMap(list) {
++  const map = new Map();
++  for (const item of Array.isArray(list) ? list : []) {
++    if (item && typeof item.id === "string" && !item.removed) map.set(item.id, item);
++  }
++  return map;
++}
++
++async function loadState(roomId) {
++  const room = await Room.findById(roomId).lean();
++  if (!room) return null;
++  return {
++    roomId,
++    creatorId: room.creator?.toString(),
++    view: room.currentView || "whiteboard",
++    board: {
++      objects: toMap(room.board?.objects),
++      pageCount: Math.max(1, room.board?.pageCount || 1),
++      page: 0,
++      legacyImage: room.whiteboardImage || null,
++    },
++    pdf: {
++      url: room.pdf?.url || null,
++      currentPage: room.pdf?.currentPage || 1,
++      annotations: toMap(room.pdf?.annotations),
++    },
++    dirty: false,
++    timer: null,
++  };
++}
++
++export async function getRoomState(roomId) {
++  const cached = states.get(roomId);
++  if (cached) return cached;
++  if (loading.has(roomId)) return loading.get(roomId);
++
++  const promise = loadState(roomId)
++    .then((state) => {
++      if (state) states.set(roomId, state);
++      return state;
++    })
++    .finally(() => loading.delete(roomId));
++  loading.set(roomId, promise);
++  return promise;
++}
++
++export function serializeState(state) {
++  return {
++    view: state.view,
++    board: {
++      objects: [...state.board.objects.values()],
++      pageCount: state.board.pageCount,
++      page: state.board.page,
++      legacyImage: state.board.legacyImage,
++    },
++    pdf: {
++      url: state.pdf.url,
++      currentPage: state.pdf.currentPage,
++      annotations: [...state.pdf.annotations.values()],
++    },
++  };
++}
++
++export function markDirty(state) {
++  state.dirty = true;
++  if (state.timer) return;
++  state.timer = setTimeout(() => {
++    state.timer = null;
++    flushState(state).catch((err) => console.error("Room state flush failed:", err.message));
++  }, FLUSH_DELAY_MS);
++}
++
++export async function flushState(state) {
++  if (!state.dirty) return;
++  state.dirty = false;
++  await Room.updateOne(
++    { _id: state.roomId },
++    {
++      $set: {
++        "board.objects": [...state.board.objects.values()],
++        "board.pageCount": state.board.pageCount,
++        "pdf.annotations": [...state.pdf.annotations.values()],
++        "pdf.currentPage": state.pdf.currentPage,
++        currentView: state.view,
++        lastActivity: new Date(),
++      },
++    }
++  );
++}
++
++/** Flush and drop the in-memory copy once nobody is in the room any more. */
++export async function releaseRoomState(roomId) {
++  const state = states.get(roomId);
++  if (!state) return;
++  if (state.timer) {
++    clearTimeout(state.timer);
++    state.timer = null;
++  }
++  try {
++    await flushState(state);
++  } finally {
++    states.delete(roomId);
++  }
++}
++
++/** Test helper */
++export function _resetRoomStates() {
++  for (const s of states.values()) if (s.timer) clearTimeout(s.timer);
++  states.clear();
++  loading.clear();
++}
++
++/** Called by the PDF upload route so a stale in-memory copy can't overwrite the new document. */
++export function resetPdfState(roomId, url) {
++  const state = states.get(String(roomId));
++  if (!state) return;
++  state.pdf.url = url;
++  state.pdf.currentPage = 1;
++  state.pdf.annotations = new Map();
++  markDirty(state);
++}
+diff --git a/sockets/view.js b/sockets/view.js
+index 47a6388..2b18543 100644
+--- a/sockets/view.js
++++ b/sockets/view.js
+@@ -1,8 +1,17 @@
+ // sockets/view.js
++import { getRoomState, markDirty } from "./roomState.js";
++import { requireHost } from "./permissions.js";
++
++const VIEWS = new Set(["whiteboard", "pdf"]);
++
+ export default function viewEvents(socket, io) {
+-  socket.on("change-view", ({ roomId, view }) => {
+-      console.log(`📄 View changed to "${view}" in room ${roomId}`);
+-      // Broadcast new view to everyone in the room
+-      socket.to(roomId).emit("change-view", view);
+-    });
++  socket.on("change-view", async ({ roomId, view } = {}) => {
++    if (!requireHost(socket, roomId) || !VIEWS.has(view)) return;
++    const state = await getRoomState(roomId);
++    if (state) {
++      state.view = view;
++      markDirty(state);
++    }
++    socket.to(roomId).emit("change-view", view);
++  });
+ }
+diff --git a/sockets/whiteboard.js b/sockets/whiteboard.js
+index 7ec3db9..32ba4fe 100644
+--- a/sockets/whiteboard.js
++++ b/sockets/whiteboard.js
+@@ -1,14 +1,68 @@
+ // sockets/whiteboard.js
++// Realtime whiteboard events. Only the verified host (room creator) may change the board;
++// everyone else in the room is a read-only listener.
++import { applyOps, applyStrokeChunk } from "./boardOps.js";
++import { getRoomState, markDirty } from "./roomState.js";
++import { requireHost } from "./permissions.js";
++
+ export default function whiteboardEvents(socket, io) {
+-  socket.on("whiteboard-draw", (data) => {
+-    socket.broadcast.to(data.room).emit("whiteboard-draw", data);
++  // Batched object operations: add / update / remove / clear
++  socket.on("board-op", async ({ room, ops } = {}) => {
++    if (!requireHost(socket, room)) return;
++    const state = await getRoomState(room);
++    if (!state) return;
++
++    const applied = applyOps(state.board.objects, ops);
++    if (applied.length === 0) return;
++
++    // Keep the page counter honest if objects reference pages beyond it
++    for (const op of applied) {
++      const page = op.op === "add" ? op.obj.page : undefined;
++      if (Number.isInteger(page) && page + 1 > state.board.pageCount) state.board.pageCount = page + 1;
++    }
++
++    markDirty(state);
++    socket.to(room).emit("board-op", { ops: applied });
++  });
++
++  // Live freehand streaming (points arrive in small chunks while the host is still drawing)
++  socket.on("board-stroke", async ({ room, id, page, meta, points } = {}) => {
++    if (!requireHost(socket, room)) return;
++    const state = await getRoomState(room);
++    if (!state) return;
++
++    const stroke = applyStrokeChunk(state.board.objects, { id, page, meta, points });
++    if (!stroke) return;
++
++    markDirty(state);
++    socket.to(room).emit("board-stroke", { id, page: stroke.page, meta, points });
++  });
++
++  socket.on("board-page", async ({ room, page, pageCount } = {}) => {
++    if (!requireHost(socket, room)) return;
++    if (!Number.isInteger(page) || page < 0 || page > 499) return;
++    const state = await getRoomState(room);
++    if (!state) return;
++
++    state.board.page = page;
++    if (Number.isInteger(pageCount) && pageCount >= 1 && pageCount <= 500) {
++      state.board.pageCount = Math.max(pageCount, page + 1);
++    }
++    markDirty(state);
++    socket.to(room).emit("board-page", { page, pageCount: state.board.pageCount });
+   });
+ 
+-  socket.on("whiteboard-clear", (roomId) => {
+-    socket.broadcast.to(roomId).emit("whiteboard-clear");
++  // The host's visible region, so followers can mirror it on any screen size
++  socket.on("board-view", ({ room, rect, page } = {}) => {
++    if (!requireHost(socket, room)) return;
++    if (!rect || ![rect.x, rect.y, rect.w, rect.h].every(Number.isFinite)) return;
++    socket.to(room).emit("board-view", { rect, page });
+   });
+ 
+-  socket.on("whiteboard-text", (data) => {
+-    socket.broadcast.to(data.room).emit("whiteboard-text", data);
++  // Laser pointer for both the board and PDF views (world coordinates)
++  socket.on("pointer", ({ room, view, page, x, y, active } = {}) => {
++    if (!requireHost(socket, room)) return;
++    if (active !== false && !(Number.isFinite(x) && Number.isFinite(y))) return;
++    socket.to(room).emit("pointer", { view, page, x, y, active });
+   });
+-}
+\ No newline at end of file
++}
+diff --git a/tests/__tests__/boardOps.unit.test.js b/tests/__tests__/boardOps.unit.test.js
+new file mode 100644
+index 0000000..30522fe
+--- /dev/null
++++ b/tests/__tests__/boardOps.unit.test.js
+@@ -0,0 +1,58 @@
++import { applyOps, applyStrokeChunk, validateObject } from '../../sockets/boardOps.js';
++
++const stroke = (id, extra = {}) => ({ id, type: 'stroke', page: 0, points: [[0, 0, 0.5]], color: '#000', width: 3, ...extra });
++
++describe('boardOps', () => {
++  test('add / update / remove roundtrip', () => {
++    const objects = new Map();
++    const applied = applyOps(objects, [
++      { op: 'add', obj: stroke('a') },
++      { op: 'update', id: 'a', patch: { color: '#f00' } },
++    ]);
++    expect(applied).toHaveLength(2);
++    expect(objects.get('a').color).toBe('#f00');
++
++    applyOps(objects, [{ op: 'remove', id: 'a' }]);
++    expect(objects.size).toBe(0);
++  });
++
++  test('rejects invalid objects and unsafe patches', () => {
++    const objects = new Map();
++    expect(applyOps(objects, [{ op: 'add', obj: { id: 'x', type: 'script' } }])).toHaveLength(0);
++    expect(applyOps(objects, [{ op: 'add', obj: { type: 'stroke' } }])).toHaveLength(0);
++    applyOps(objects, [{ op: 'add', obj: stroke('a') }]);
++    expect(applyOps(objects, [{ op: 'update', id: 'a', patch: { id: 'b' } }])).toHaveLength(0);
++    expect(applyOps(objects, [{ op: 'update', id: 'a', patch: { type: 'text' } }])).toHaveLength(0);
++    expect(applyOps(objects, [{ op: 'update', id: 'missing', patch: { color: '#fff' } }])).toHaveLength(0);
++  });
++
++  test('clear removes only the requested page', () => {
++    const objects = new Map();
++    applyOps(objects, [
++      { op: 'add', obj: stroke('a', { page: 0 }) },
++      { op: 'add', obj: stroke('b', { page: 1 }) },
++    ]);
++    applyOps(objects, [{ op: 'clear', page: 0 }]);
++    expect([...objects.keys()]).toEqual(['b']);
++  });
++
++  test('stroke chunks build a stroke incrementally', () => {
++    const objects = new Map();
++    const meta = { tool: 'pen', color: '#123456', width: 4, opacity: 1 };
++    applyStrokeChunk(objects, { id: 's1', page: 2, meta, points: [[0, 0, 0.5], [1, 1, 0.5]] });
++    const s = applyStrokeChunk(objects, { id: 's1', page: 2, points: [[2, 2, 0.5]] });
++    expect(s.points).toHaveLength(3);
++    expect(s.page).toBe(2);
++    expect(s.color).toBe('#123456');
++  });
++
++  test('stroke chunk without meta cannot create a stroke', () => {
++    expect(applyStrokeChunk(new Map(), { id: 'nope', page: 0, points: [[0, 0]] })).toBeNull();
++  });
++
++  test('validateObject enforces limits', () => {
++    expect(validateObject({ id: 't', type: 'text', page: 0, text: 'x'.repeat(5001) })).toBe(false);
++    expect(validateObject({ id: 't', type: 'text', page: 0, text: 'hello' })).toBe(true);
++    expect(validateObject({ id: 'm', type: 'markup', page: 1, rects: [] })).toBe(true);
++  });
++});
+diff --git a/tests/__tests__/boardSockets.integration.test.js b/tests/__tests__/boardSockets.integration.test.js
+new file mode 100644
+index 0000000..3a23a06
+--- /dev/null
++++ b/tests/__tests__/boardSockets.integration.test.js
+@@ -0,0 +1,120 @@
++// Verifies host-only writes and late-join state sync without needing real MongoDB documents:
++// Room model statics are stubbed, everything else (socket.io, JWT cookie auth, handlers) is real.
++import http from 'http';
++import { jest } from '@jest/globals';
++import jwt from 'jsonwebtoken';
++import { Server } from 'socket.io';
++import { io as Client } from 'socket.io-client';
++import Room from '../../models/Room.js';
++
++// The audio socket module creates a Deepgram client at import time and needs a key to exist
++process.env.DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || 'test-deepgram-key';
++const { default: socketManager } = await import('../../sockets/index.js');
++const { _resetRoomStates } = await import('../../sockets/roomState.js');
++
++const ROOM_ID = '64b7f0f0f0f0f0f0f0f0f0f0';
++const HOST_ID = '64b7f0f0f0f0f0f0f0f0f0a1';
++
++let server, io, port;
++const clients = [];
++
++const connect = (userId) =>
++  new Promise((resolve) => {
++    const token = userId ? jwt.sign({ id: userId }, process.env.JWT_SECRET) : null;
++    const c = Client(`http://localhost:${port}`, {
++      transports: ['websocket'],
++      extraHeaders: token ? { cookie: `token=${token}` } : {},
++    });
++    clients.push(c);
++    c.on('connect', () => resolve(c));
++  });
++
++const join = (c, name) =>
++  new Promise((resolve) => {
++    c.once('room-state', resolve);
++    c.emit('join-room', { roomId: ROOM_ID, user: { id: name, name } });
++  });
++
++const wait = (ms) => new Promise((r) => setTimeout(r, ms));
++
++beforeAll(async () => {
++  Room.findById = () => ({
++    lean: async () => ({
++      _id: ROOM_ID,
++      creator: HOST_ID,
++      currentView: 'whiteboard',
++      board: { objects: [], pageCount: 1 },
++      pdf: { url: null, currentPage: 1, annotations: [] },
++    }),
++  });
++  Room.updateOne = jest.fn(async () => ({}));
++
++  server = http.createServer();
++  io = new Server(server);
++  socketManager(io);
++  await new Promise((r) => server.listen(0, r));
++  port = server.address().port;
++});
++
++afterAll(async () => {
++  clients.forEach((c) => c.close());
++  _resetRoomStates();
++  io.close();
++  await new Promise((r) => server.close(r));
++});
++
++test('only the verified host can draw; late joiners receive the full board', async () => {
++  const host = await connect(HOST_ID);
++  const listener = await connect(null);
++
++  const hostState = await join(host, 'host');
++  const listenerState = await join(listener, 'listener');
++  expect(hostState.isHost).toBe(true);
++  expect(listenerState.isHost).toBe(false);
++
++  const received = [];
++  listener.on('board-op', (d) => received.push(d));
++
++  // A listener tries to draw and clear the board: must be ignored
++  listener.emit('board-op', { room: ROOM_ID, ops: [{ op: 'add', obj: { id: 'evil', type: 'stroke', page: 0, points: [] } }] });
++  listener.emit('board-op', { room: ROOM_ID, ops: [{ op: 'clear' }] });
++  await wait(100);
++  expect(received).toHaveLength(0);
++
++  // The host draws: listener sees it live
++  host.emit('board-op', { room: ROOM_ID, ops: [{ op: 'add', obj: { id: 'good', type: 'stroke', page: 0, points: [[1, 2, 0.5]], color: '#000', width: 3 } }] });
++  host.emit('board-stroke', { room: ROOM_ID, id: 's2', page: 0, meta: { tool: 'pen', color: '#f00', width: 4, opacity: 1 }, points: [[0, 0, 0.5], [5, 5, 0.5]] });
++  await wait(150);
++  expect(received.map((d) => d.ops[0].obj.id)).toEqual(['good']);
++
++  // A brand new listener joins late and gets everything drawn so far
++  const late = await connect(null);
++  const lateState = await join(late, 'late');
++  const ids = lateState.board.objects.map((o) => o.id).sort();
++  expect(ids).toEqual(['good', 's2']);
++  expect(lateState.board.objects.find((o) => o.id === 's2').points).toHaveLength(2);
++});
++
++test('only the host can change view and PDF annotations', async () => {
++  const host = await connect(HOST_ID);
++  const listener = await connect(null);
++  await join(host, 'host2');
++  await join(listener, 'listener2');
++
++  const views = [];
++  const pdfOps = [];
++  listener.on('change-view', (v) => views.push(v));
++  listener.on('pdf-op', (d) => pdfOps.push(d));
++
++  listener.emit('change-view', { roomId: ROOM_ID, view: 'pdf' });
++  listener.emit('pdf-op', { room: ROOM_ID, ops: [{ op: 'add', obj: { id: 'h1', type: 'markup', page: 1, rects: [] } }] });
++  await wait(100);
++  expect(views).toHaveLength(0);
++  expect(pdfOps).toHaveLength(0);
++
++  host.emit('change-view', { roomId: ROOM_ID, view: 'pdf' });
++  host.emit('pdf-op', { room: ROOM_ID, ops: [{ op: 'add', obj: { id: 'h1', type: 'markup', page: 1, rects: [[0, 0, 10, 10]], kind: 'highlight', color: '#ff0' } }] });
++  await wait(150);
++  expect(views).toEqual(['pdf']);
++  expect(pdfOps).toHaveLength(1);
++});
