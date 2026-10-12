@@ -5,6 +5,14 @@ import { getRoomState, markDirty } from "./roomState.js";
 import { requireHost } from "./permissions.js";
 
 export default function pdfEvents(socket, io) {
+  socket.on("pdf-view", ({ room, page, viewport } = {}) => {
+    if (!requireHost(socket, room) || !Number.isInteger(page) || page < 1 || page > 10000) return;
+    if (!viewport || !["x0", "x1", "y0", "y1"].every((key) =>
+      Number.isFinite(viewport[key]) && viewport[key] >= 0 && viewport[key] <= 1
+    ) || viewport.x0 >= viewport.x1 || viewport.y0 >= viewport.y1) return;
+    socket.to(room).emit("pdf-view", { page, viewport });
+  });
+
   socket.on("pdf-page-change", async ({ room, page } = {}) => {
     if (!requireHost(socket, room)) return;
     if (!Number.isInteger(page) || page < 1 || page > 10000) return;
