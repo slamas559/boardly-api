@@ -10,6 +10,8 @@ export const OBJECT_TYPES = new Set([
   "highlight",  // legacy PDF highlight (percent rects) - kept so old data still loads
 ]);
 
+export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table"]);
+
 export const LIMITS = {
   maxObjects: 20000,
   maxPoints: 20000,
@@ -17,14 +19,18 @@ export const LIMITS = {
   maxRects: 400,
   maxPage: 499,
   maxPatchBytes: 200 * 1024,
+  maxTableRows: 12,
+  maxTableColumns: 12,
+  maxEquationLength: 120,
+  maxInequalityLength: 967,
 };
 
 const isFiniteNum = (n) => typeof n === "number" && Number.isFinite(n);
 
-export function validateObject(obj) {
+export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
   if (!obj || typeof obj !== "object") return false;
   if (typeof obj.id !== "string" || obj.id.length === 0 || obj.id.length > 48) return false;
-  if (!OBJECT_TYPES.has(obj.type)) return false;
+  if (!allowedTypes.has(obj.type)) return false;
   if (obj.page !== undefined && !(Number.isInteger(obj.page) && obj.page >= 0 && obj.page <= LIMITS.maxPage)) {
     // PDF pages are 1-based, board pages 0-based; both are small non-negative integers
     return false;
@@ -38,6 +44,90 @@ export function validateObject(obj) {
     for (const k of ["x", "y", "w", "h", "x1", "y1", "x2", "y2"]) {
       if (obj[k] !== undefined && !isFiniteNum(obj[k])) return false;
     }
+  }
+  if (obj.type === "graph") {
+    if (typeof obj.expression !== "string" || obj.expression.length === 0) return false;
+    const mode = obj.mode || "explicit";
+    if (!["explicit", "implicit", "inequality", "parametric", "polar", "surface3d", "curve3d", "parametricSurface3d"].includes(mode)) return false;
+    const maxExpressionLength = mode === "inequality" ? LIMITS.maxInequalityLength : LIMITS.maxEquationLength;
+    if (obj.expression.length > maxExpressionLength) return false;
+    if (mode === "implicit" && (obj.expression.match(/=/g) || []).length !== 1) return false;
+    if (mode === "inequality") {
+      const lines = obj.expression.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (lines.length === 0 || lines.length > 8 || lines.some((line) =>
+        line.length > LIMITS.maxEquationLength || (line.match(/<=|>=|<|>/g) || []).length !== 1
+      )) return false;
+    }
+    if (mode === "parametric" && (
+      typeof obj.xExpression !== "string" || obj.xExpression.length === 0 || obj.xExpression.length > LIMITS.maxEquationLength
+      || typeof obj.yExpression !== "string" || obj.yExpression.length === 0 || obj.yExpression.length > LIMITS.maxEquationLength
+    )) return false;
+    if (mode === "curve3d" || mode === "parametricSurface3d") {
+      if (typeof obj.xExpression !== "string" || obj.xExpression.length === 0 || obj.xExpression.length > LIMITS.maxEquationLength
+        || typeof obj.yExpression !== "string" || obj.yExpression.length === 0 || obj.yExpression.length > LIMITS.maxEquationLength
+        || typeof obj.zExpression !== "string" || obj.zExpression.length === 0 || obj.zExpression.length > LIMITS.maxEquationLength) return false;
+    }
+    if (["surface3d", "curve3d", "parametricSurface3d"].includes(mode)) {
+      if (!isFiniteNum(obj.zMin) || !isFiniteNum(obj.zMax) || Math.abs(obj.zMin) > 1_000_000
+        || Math.abs(obj.zMax) > 1_000_000 || obj.zMin >= obj.zMax
+        || !isFiniteNum(obj.azimuth) || Math.abs(obj.azimuth) > 360_000
+        || !isFiniteNum(obj.elevation) || obj.elevation < 12 || obj.elevation > 82) return false;
+    }
+    for (const key of ["x", "y", "w", "h", "xMin", "xMax", "yMin", "yMax"]) {
+      if (!isFiniteNum(obj[key])) return false;
+    }
+    if (obj.w < 80 || obj.h < 80 || obj.w > 100000 || obj.h > 100000) return false;
+    if (Math.abs(obj.xMin) > 1_000_000 || Math.abs(obj.xMax) > 1_000_000
+      || Math.abs(obj.yMin) > 1_000_000 || Math.abs(obj.yMax) > 1_000_000
+      || obj.xMin >= obj.xMax || obj.yMin >= obj.yMax) return false;
+    if (mode === "parametric" || mode === "polar") {
+      if (!isFiniteNum(obj.tMin) || !isFiniteNum(obj.tMax) || Math.abs(obj.tMin) > 1_000_000
+        || Math.abs(obj.tMax) > 1_000_000 || obj.tMin >= obj.tMax) return false;
+    }
+    if (mode === "curve3d" && (!isFiniteNum(obj.tMin) || !isFiniteNum(obj.tMax)
+      || Math.abs(obj.tMin) > 1_000_000 || Math.abs(obj.tMax) > 1_000_000 || obj.tMin >= obj.tMax)) return false;
+    if (mode === "parametricSurface3d") {
+      if (![obj.uMin, obj.uMax, obj.vMin, obj.vMax].every(isFiniteNum)
+        || [obj.uMin, obj.uMax, obj.vMin, obj.vMax].some((value) => Math.abs(value) > 1_000_000)
+        || obj.uMin >= obj.uMax || obj.vMin >= obj.vMax) return false;
+    }
+    if (obj.geometry !== undefined) {
+      const fieldsByKind = {
+        point: ["x", "y"],
+        vector: ["x", "y", "dx", "dy"],
+        segment: ["x1", "y1", "x2", "y2"],
+        ray: ["x1", "y1", "x2", "y2"],
+        angle: ["ax", "ay", "vx", "vy", "cx", "cy"],
+      };
+      if (!Array.isArray(obj.geometry) || obj.geometry.length > 24
+        || obj.geometry.some((element) => {
+          const fields = element && fieldsByKind[element.kind];
+          if (element?.kind === "polygon") {
+            return typeof element.id !== "string" || element.id.length === 0 || element.id.length > 48
+              || typeof element.label !== "string" || element.label.length > 24
+              || !Array.isArray(element.vertices) || element.vertices.length < 3 || element.vertices.length > 12
+              || element.vertices.some((point) => !Array.isArray(point) || point.length !== 2
+                || point.some((value) => !isFiniteNum(value) || Math.abs(value) > 1_000_000))
+              || (element.filled !== undefined && typeof element.filled !== "boolean");
+          }
+          return !fields || typeof element.id !== "string" || element.id.length === 0 || element.id.length > 48
+            || (element.label !== undefined && (typeof element.label !== "string" || element.label.length > 24))
+            || fields.some((field) => !isFiniteNum(element[field]) || Math.abs(element[field]) > 1_000_000)
+            || (element.kind === "angle" && ((element.ax === element.vx && element.ay === element.vy)
+              || (element.cx === element.vx && element.cy === element.vy)
+              || !["degrees", "radians"].includes(element.angleUnit)))
+            || (["segment", "ray"].includes(element.kind) && element.showMeasure !== undefined && typeof element.showMeasure !== "boolean");
+        })) return false;
+    }
+  }
+  if (obj.type === "table") {
+    if (!Number.isInteger(obj.rows) || obj.rows < 1 || obj.rows > LIMITS.maxTableRows
+      || !Number.isInteger(obj.cols) || obj.cols < 1 || obj.cols > LIMITS.maxTableColumns
+      || !isFiniteNum(obj.x) || !isFiniteNum(obj.y)
+      || !isFiniteNum(obj.cellWidth) || obj.cellWidth < 40 || obj.cellWidth > 10000
+      || !isFiniteNum(obj.cellHeight) || obj.cellHeight < 24 || obj.cellHeight > 10000
+      || !Array.isArray(obj.cells) || obj.cells.length !== obj.rows * obj.cols
+      || obj.cells.some((cell) => typeof cell !== "string" || cell.length > 5000)) return false;
   }
   return true;
 }
@@ -56,7 +146,7 @@ function patchIsSafe(patch) {
  * Apply a list of ops to `objects` (Map<string, object>) in place.
  * Returns only the ops that were valid and applied, so they can be safely relayed.
  */
-export function applyOps(objects, ops) {
+export function applyOps(objects, ops, { allowedTypes = OBJECT_TYPES } = {}) {
   const applied = [];
   if (!Array.isArray(ops)) return applied;
 
@@ -65,7 +155,7 @@ export function applyOps(objects, ops) {
 
     switch (op.op) {
       case "add": {
-        if (!validateObject(op.obj)) break;
+        if (!validateObject(op.obj, allowedTypes)) break;
         if (!objects.has(op.obj.id) && objects.size >= LIMITS.maxObjects) break;
         objects.set(op.obj.id, op.obj);
         applied.push(op);
@@ -75,7 +165,7 @@ export function applyOps(objects, ops) {
         const existing = objects.get(op.id);
         if (!existing || !patchIsSafe(op.patch)) break;
         const next = { ...existing, ...op.patch };
-        if (!validateObject(next)) break;
+        if (!validateObject(next, allowedTypes)) break;
         objects.set(op.id, next);
         applied.push({ op: "update", id: op.id, patch: op.patch });
         break;

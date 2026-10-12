@@ -73,7 +73,11 @@ test('only the verified host can draw; late joiners receive the full board', asy
   expect(listenerState.isHost).toBe(false);
 
   const received = [];
+  const previews = [];
+  const pointers = [];
   listener.on('board-op', (d) => received.push(d));
+  listener.on('board-preview', (d) => previews.push(d));
+  listener.on('pointer', (d) => pointers.push(d));
 
   // A listener tries to draw and clear the board: must be ignored
   listener.emit('board-op', { room: ROOM_ID, ops: [{ op: 'add', obj: { id: 'evil', type: 'stroke', page: 0, points: [] } }] });
@@ -83,16 +87,51 @@ test('only the verified host can draw; late joiners receive the full board', asy
 
   // The host draws: listener sees it live
   host.emit('board-op', { room: ROOM_ID, ops: [{ op: 'add', obj: { id: 'good', type: 'stroke', page: 0, points: [[1, 2, 0.5]], color: '#000', width: 3 } }] });
+  host.emit('board-op', { room: ROOM_ID, ops: [
+    { op: 'add', obj: { id: 'graph1', type: 'graph', page: 0, expression: 'x^2', x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10, geometry: [{ id: 'p1', kind: 'point', label: 'A', x: 2, y: 4 }] } },
+    { op: 'add', obj: { id: 'graph2', type: 'graph', page: 0, mode: 'implicit', expression: 'x^2 + y^2 = 25', x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10 } },
+    { op: 'add', obj: { id: 'graph3', type: 'graph', page: 0, mode: 'parametric', expression: 'x(t), y(t)', xExpression: 'cos(t)', yExpression: 'sin(t)', tMin: 0, tMax: 6.28, x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10 } },
+    { op: 'add', obj: { id: 'graph4', type: 'graph', page: 0, mode: 'polar', expression: '2 + cos(5t)', tMin: 0, tMax: 6.28, x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10 } },
+    { op: 'add', obj: { id: 'graph5', type: 'graph', page: 0, mode: 'inequality', expression: 'y > 2x + 1\nx^2 + y^2 <= 16', x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10 } },
+    { op: 'add', obj: { id: 'graph6', type: 'graph', page: 0, mode: 'surface3d', expression: 'x^2 - y^2', x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: -10, zMax: 10, azimuth: 42, elevation: 32 } },
+    { op: 'add', obj: { id: 'graph7', type: 'graph', page: 0, mode: 'curve3d', expression: 'x(t), y(t), z(t)', xExpression: 'cos(t)', yExpression: 'sin(t)', zExpression: 't', tMin: 0, tMax: 6.28, x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: -10, zMax: 10, azimuth: 42, elevation: 32 } },
+    { op: 'add', obj: { id: 'graph8', type: 'graph', page: 0, mode: 'parametricSurface3d', expression: 'x(u,v), y(u,v), z(u,v)', xExpression: 'cos(u)', yExpression: 'sin(u)', zExpression: 'v', uMin: 0, uMax: 6.28, vMin: -1, vMax: 1, x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: -10, zMax: 10, azimuth: 42, elevation: 32 } },
+    { op: 'add', obj: { id: 'table1', type: 'table', page: 0, x: 0, y: 0, rows: 1, cols: 2, cellWidth: 110, cellHeight: 40, cells: ['x', 'y'] } },
+  ] });
+  host.emit('board-preview', {
+    room: ROOM_ID, id: 'graph6', page: 0, active: true,
+    obj: { id: 'graph6', type: 'graph', page: 0, mode: 'surface3d', expression: 'x^2 - y^2', x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: -10, zMax: 10, azimuth: 111, elevation: 44 },
+  });
   host.emit('board-stroke', { room: ROOM_ID, id: 's2', page: 0, meta: { tool: 'pen', color: '#f00', width: 4, opacity: 1 }, points: [[0, 0, 0.5], [5, 5, 0.5]] });
   await wait(150);
-  expect(received.map((d) => d.ops[0].obj.id)).toEqual(['good']);
+  expect(received.flatMap((d) => d.ops).map((op) => op.obj.id)).toEqual(['good', 'graph1', 'graph2', 'graph3', 'graph4', 'graph5', 'graph6', 'graph7', 'graph8', 'table1']);
+  expect(previews).toEqual([expect.objectContaining({ id: 'graph6', active: true, obj: expect.objectContaining({ azimuth: 111 }) })]);
+  host.emit('board-op', { room: ROOM_ID, ops: [{ op: 'update', id: 'graph6', patch: { azimuth: 73, elevation: 41 } }] });
+  host.emit('board-preview', { room: ROOM_ID, id: 'graph6', page: 0, active: false });
+  await wait(100);
+  expect(received.at(-1).ops).toEqual([{ op: 'update', id: 'graph6', patch: { azimuth: 73, elevation: 41 } }]);
+  expect(previews.at(-1)).toEqual({ id: 'graph6', page: 0, obj: null, active: false });
+  host.emit('pointer', { room: ROOM_ID, view: 'board', page: 0, x: 4, y: 8, active: true, tool: 'pen', angle: 0.7 });
+  await wait(25);
+  expect(pointers.at(-1)).toEqual({ view: 'board', page: 0, x: 4, y: 8, active: true, tool: 'pen', angle: 0.7 });
 
   // A brand new listener joins late and gets everything drawn so far
   const late = await connect(null);
   const lateState = await join(late, 'late');
   const ids = lateState.board.objects.map((o) => o.id).sort();
-  expect(ids).toEqual(['good', 's2']);
+  expect(ids).toEqual(['good', 'graph1', 'graph2', 'graph3', 'graph4', 'graph5', 'graph6', 'graph7', 'graph8', 's2', 'table1']);
   expect(lateState.board.objects.find((o) => o.id === 's2').points).toHaveLength(2);
+  expect(lateState.board.objects.find((o) => o.id === 'graph1').expression).toBe('x^2');
+  expect(lateState.board.objects.find((o) => o.id === 'graph1').geometry).toEqual([{ id: 'p1', kind: 'point', label: 'A', x: 2, y: 4 }]);
+  expect(lateState.board.objects.find((o) => o.id === 'graph2').expression).toBe('x^2 + y^2 = 25');
+  expect(lateState.board.objects.find((o) => o.id === 'graph3').yExpression).toBe('sin(t)');
+  expect(lateState.board.objects.find((o) => o.id === 'graph4').mode).toBe('polar');
+  expect(lateState.board.objects.find((o) => o.id === 'graph5').expression).toBe('y > 2x + 1\nx^2 + y^2 <= 16');
+  expect(lateState.board.objects.find((o) => o.id === 'graph6').mode).toBe('surface3d');
+  expect(lateState.board.objects.find((o) => o.id === 'graph6').azimuth).toBe(73);
+  expect(lateState.board.objects.find((o) => o.id === 'graph7').zExpression).toBe('t');
+  expect(lateState.board.objects.find((o) => o.id === 'graph8').mode).toBe('parametricSurface3d');
+  expect(lateState.board.objects.find((o) => o.id === 'table1').cells).toEqual(['x', 'y']);
 });
 
 test('only the host can change view and PDF annotations', async () => {
