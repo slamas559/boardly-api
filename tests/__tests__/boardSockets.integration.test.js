@@ -142,18 +142,29 @@ test('only the host can change view and PDF annotations', async () => {
 
   const views = [];
   const pdfOps = [];
+  const pdfPreviews = [];
   listener.on('change-view', (v) => views.push(v));
   listener.on('pdf-op', (d) => pdfOps.push(d));
+  listener.on('pdf-preview', (d) => pdfPreviews.push(d));
 
   listener.emit('change-view', { roomId: ROOM_ID, view: 'pdf' });
   listener.emit('pdf-op', { room: ROOM_ID, ops: [{ op: 'add', obj: { id: 'h1', type: 'markup', page: 1, rects: [] } }] });
+  listener.emit('pdf-preview', { room: ROOM_ID, id: 'text1', page: 1, obj: { id: 'text1', type: 'text', page: 1, text: 'forbidden' } });
   await wait(100);
   expect(views).toHaveLength(0);
   expect(pdfOps).toHaveLength(0);
+  expect(pdfPreviews).toHaveLength(0);
 
   host.emit('change-view', { roomId: ROOM_ID, view: 'pdf' });
+  host.emit('pdf-preview', { room: ROOM_ID, id: 'text1', page: 1, obj: { id: 'text1', type: 'text', page: 1, text: 'draft' } });
+  await wait(50);
+  expect(pdfPreviews).toEqual([{
+    id: 'text1', page: 1, obj: { id: 'text1', type: 'text', page: 1, text: 'draft' }, active: true,
+  }]);
+  host.emit('pdf-preview', { room: ROOM_ID, id: 'text1', page: 1, active: false });
   host.emit('pdf-op', { room: ROOM_ID, ops: [{ op: 'add', obj: { id: 'h1', type: 'markup', page: 1, rects: [[0, 0, 10, 10]], kind: 'highlight', color: '#ff0' } }] });
   await wait(150);
   expect(views).toEqual(['pdf']);
   expect(pdfOps).toHaveLength(1);
+  expect(pdfPreviews.at(-1)).toEqual({ id: 'text1', page: 1, obj: null, active: false });
 });
