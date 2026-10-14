@@ -5,6 +5,7 @@ import audioEvents from "./audio.js";
 import chatEvents from "./chat.js";
 import viewEvents from "./view.js";
 import qaEvents from "./qa.js";
+import recordingEvents, { isRoomRecording } from "./recording.js";
 import Room from "../models/Room.js";
 import jwt from "jsonwebtoken";
 import { getRoomState, serializeState, releaseRoomState } from "./roomState.js";
@@ -73,7 +74,7 @@ export default function socketManager(io) {
 
         // Send the full live state so late joiners see exactly what everyone else sees
         if (state) {
-          socket.emit("room-state", { ...serializeState(state), isHost });
+          socket.emit("room-state", { ...serializeState(state), isHost, isRecording: isRoomRecording(roomId) });
           socket.emit("change-view", state.view);
         }
 
@@ -96,6 +97,7 @@ export default function socketManager(io) {
     chatEvents(socket, io);
     viewEvents(socket, io);
     qaEvents(socket, io);
+    recordingEvents(socket, io);
 
     socket.on("disconnect", () => {
       console.log("User disconnected:", socket.id);

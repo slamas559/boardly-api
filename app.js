@@ -7,6 +7,8 @@ import pdfRoutes from './routes/pdfRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import boardRoutes from './routes/boardRoutes.js';
 import paystackRoutes from './routes/paystackRoutes.js';
+import mediaRoutes from './routes/mediaRoutes.js';
+import recordingRoutes from './routes/recordingRoutes.js';
 
 dotenv.config();
 
@@ -47,6 +49,8 @@ app.use("/rooms", roomRoutes);
 app.use("/pdf", pdfRoutes);
 app.use("/auth", authRoutes);
 app.use("/board", boardRoutes);
+app.use("/media", mediaRoutes);
+app.use("/recordings", recordingRoutes);
 app.use("/payments", paystackRoutes);
 
 app.get('/', (req, res) => {

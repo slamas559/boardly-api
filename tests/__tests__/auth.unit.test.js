@@ -12,7 +12,6 @@ describe('Auth Unit Tests', () => {
         name: 'John Doe',
         email: 'john@example.com',
         password: await bcrypt.hash('password123', 12),
-        role: 'student',
         emailVerified: true
       };
 
@@ -22,7 +21,7 @@ describe('Auth Unit Tests', () => {
       expect(user._id).toBeDefined();
       expect(user.name).toBe('John Doe');
       expect(user.email).toBe('john@example.com');
-      expect(user.role).toBe('student');
+      expect(user.role).toBeUndefined();
       expect(user.emailVerified).toBe(true);
     });
 
@@ -32,8 +31,7 @@ describe('Auth Unit Tests', () => {
       const duplicateUser = new User({
         name: 'Another User',
         email: 'duplicate@example.com',
-        password: await bcrypt.hash('password123', 12),
-        role: 'student'
+        password: await bcrypt.hash('password123', 12)
       });
 
       await expect(duplicateUser.save()).rejects.toThrow();
@@ -42,14 +40,13 @@ describe('Auth Unit Tests', () => {
     test('should require email field', async () => {
       const user = new User({
         name: 'No Email User',
-        password: 'password123',
-        role: 'student'
+        password: 'password123'
       });
 
       await expect(user.save()).rejects.toThrow();
     });
 
-    test('should have default role as student', async () => {
+    test('should not assign an account role', async () => {
       const user = new User({
         name: 'Default Role User',
         email: 'default@example.com',
@@ -57,7 +54,7 @@ describe('Auth Unit Tests', () => {
       });
 
       await user.save();
-      expect(user.role).toBe('student');
+      expect(user.role).toBeUndefined();
     });
   });
 
@@ -158,37 +155,32 @@ describe('Auth Unit Tests', () => {
   });
 
   describe('Bank Details', () => {
-    test('should add bank details to tutor', async () => {
-      const tutor = await createTestUser({
-        role: 'tutor',
-        hasPaymentSetup: false
-      });
+    test('should add bank details to any user', async () => {
+      const user = await createTestUser({ hasPaymentSetup: false });
 
-      tutor.bankDetails = {
+      user.paystackSubaccountCode = 'ACCT_test123456';
+      user.bankDetails = {
         bankCode: '058',
         accountNumber: '0123456789',
-        accountName: 'Test Tutor',
+        accountName: 'Test User',
         isVerified: true
       };
-      tutor.hasPaymentSetup = true;
-      await tutor.save();
+      await user.save();
 
-      const updatedTutor = await User.findById(tutor._id);
-      expect(updatedTutor.bankDetails.bankCode).toBe('058');
-      expect(updatedTutor.bankDetails.accountNumber).toBe('0123456789');
-      expect(updatedTutor.hasPaymentSetup).toBe(true);
+      const updatedUser = await User.findById(user._id);
+      expect(updatedUser.bankDetails.bankCode).toBe('058');
+      expect(updatedUser.bankDetails.accountNumber).toBe('0123456789');
+      expect(updatedUser.hasPaymentSetup).toBe(true);
     });
 
     test('should store paystack subaccount code', async () => {
-      const tutor = await createTestUser({
-        role: 'tutor'
-      });
+      const user = await createTestUser();
 
-      tutor.paystackSubaccountCode = 'ACCT_test123456';
-      await tutor.save();
+      user.paystackSubaccountCode = 'ACCT_test123456';
+      await user.save();
 
-      const updatedTutor = await User.findById(tutor._id);
-      expect(updatedTutor.paystackSubaccountCode).toBe('ACCT_test123456');
+      const updatedUser = await User.findById(user._id);
+      expect(updatedUser.paystackSubaccountCode).toBe('ACCT_test123456');
     });
   });
 

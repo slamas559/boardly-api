@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 import { Server } from 'socket.io';
 import { io as Client } from 'socket.io-client';
 import Room from '../../models/Room.js';
+import { isRoomRecording } from '../../sockets/recording.js';
 
 // The audio socket module creates a Deepgram client at import time and needs a key to exist
 process.env.DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || 'test-deepgram-key';
@@ -102,6 +103,7 @@ test('only the verified host can draw; late joiners receive the full board', asy
     room: ROOM_ID, id: 'graph6', page: 0, active: true,
     obj: { id: 'graph6', type: 'graph', page: 0, mode: 'surface3d', expression: 'x^2 - y^2', x: 0, y: 0, w: 520, h: 380, xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: -10, zMax: 10, azimuth: 111, elevation: 44 },
   });
+
   host.emit('board-stroke', { room: ROOM_ID, id: 's2', page: 0, meta: { tool: 'pen', color: '#f00', width: 4, opacity: 1 }, points: [[0, 0, 0.5], [5, 5, 0.5]] });
   await wait(150);
   expect(received.flatMap((d) => d.ops).map((op) => op.obj.id)).toEqual(['good', 'graph1', 'graph2', 'graph3', 'graph4', 'graph5', 'graph6', 'graph7', 'graph8', 'table1']);
@@ -132,6 +134,40 @@ test('only the verified host can draw; late joiners receive the full board', asy
   expect(lateState.board.objects.find((o) => o.id === 'graph7').zExpression).toBe('t');
   expect(lateState.board.objects.find((o) => o.id === 'graph8').mode).toBe('parametricSurface3d');
   expect(lateState.board.objects.find((o) => o.id === 'table1').cells).toEqual(['x', 'y']);
+});
+
+test('session recording status is host-controlled and visible to listeners and late joiners', async () => {
+  const host = await connect(HOST_ID);
+  const listener = await connect(null);
+  const lateListener = await connect(null);
+
+  const hostState = await join(host, 'recording-host');
+  await join(listener, 'recording-listener');
+  expect(hostState.isRecording).toBe(false);
+
+  const statuses = [];
+  listener.on('recording-state', (state) => statuses.push(state.active));
+  listener.emit('recording-state', { room: ROOM_ID, active: true });
+  await wait(40);
+  expect(statuses).toEqual([]);
+
+  host.emit('recording-state', { room: ROOM_ID, active: true });
+  await wait(40);
+  expect(statuses).toEqual([true]);
+  const lateState = await join(lateListener, 'late-listener');
+  expect(lateState.isRecording).toBe(true);
+
+  host.emit('recording-state', { room: ROOM_ID, active: false });
+  await wait(40);
+  expect(statuses).toEqual([true, false]);
+
+  host.emit('recording-state', { room: ROOM_ID, active: true });
+  await wait(40);
+  expect(isRoomRecording(ROOM_ID)).toBe(true);
+  host.disconnect();
+  await wait(40);
+  expect(statuses).toEqual([true, false, true, false]);
+  expect(isRoomRecording(ROOM_ID)).toBe(false);
 });
 
 test('only the host can change view and PDF annotations', async () => {

@@ -10,7 +10,7 @@ export const OBJECT_TYPES = new Set([
   "highlight",  // legacy PDF highlight (percent rects) - kept so old data still loads
 ]);
 
-export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table"]);
+export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media"]);
 
 export const LIMITS = {
   maxObjects: 20000,
@@ -128,6 +128,37 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
       || !isFiniteNum(obj.cellHeight) || obj.cellHeight < 24 || obj.cellHeight > 10000
       || !Array.isArray(obj.cells) || obj.cells.length !== obj.rows * obj.cols
       || obj.cells.some((cell) => typeof cell !== "string" || cell.length > 5000)) return false;
+  }
+  if (obj.type === "media") {
+    let mediaUrl;
+    try {
+      mediaUrl = new URL(obj.src);
+    } catch {
+      return false;
+    }
+    const mediaHost = mediaUrl.hostname.toLowerCase();
+    const cloudinaryAsset = mediaUrl.protocol === "https:" && !mediaUrl.username && !mediaUrl.password
+      && mediaHost === "res.cloudinary.com";
+    const directVideo = mediaUrl.protocol === "https:" && !mediaUrl.username && !mediaUrl.password
+      && /\.(?:mp4|webm|ogg|mov|m4v)$/i.test(mediaUrl.pathname);
+    const safeEmbedUrl = mediaUrl.protocol === "https:" && !mediaUrl.username && !mediaUrl.password && !mediaUrl.port;
+    const youtubeEmbed = safeEmbedUrl && mediaHost === "www.youtube-nocookie.com"
+      && /^\/embed\/[A-Za-z0-9_-]{11}$/.test(mediaUrl.pathname);
+    const vimeoEmbed = safeEmbedUrl && mediaHost === "player.vimeo.com"
+      && /^\/video\/\d{6,12}$/.test(mediaUrl.pathname);
+    const validMediaUrl = obj.mediaType === "image" ? cloudinaryAsset
+      : obj.mediaType === "video" ? (cloudinaryAsset || directVideo)
+        : obj.mediaType === "embed" ? ((obj.provider === "youtube" && youtubeEmbed)
+          || (obj.provider === "vimeo" && vimeoEmbed)
+          || (obj.provider === "direct" && directVideo))
+          : false;
+    if (!validMediaUrl
+      || typeof obj.src !== "string" || obj.src.length > 2048
+      || !isFiniteNum(obj.x) || !isFiniteNum(obj.y)
+      || !isFiniteNum(obj.w) || obj.w < 40 || obj.w > 100000
+      || !isFiniteNum(obj.h) || obj.h < 40 || obj.h > 100000
+      || (obj.playing !== undefined && typeof obj.playing !== "boolean")
+      || (obj.currentTime !== undefined && (!isFiniteNum(obj.currentTime) || obj.currentTime < 0 || obj.currentTime > 1_000_000))) return false;
   }
   return true;
 }

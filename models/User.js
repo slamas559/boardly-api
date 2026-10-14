@@ -12,11 +12,6 @@ const userSchema = new mongoose.Schema({
     unique: true 
   },
   
-  role: { 
-    type: String, 
-    enum: ["student", "tutor"], 
-    default: "student" 
-  },
   avatar: { type: String }, // cloudinary image URL or Google profile picture URL
   bio: { type: String },
   
@@ -34,7 +29,7 @@ const userSchema = new mongoose.Schema({
   // Paystack subaccount fields for split payments
   paystackSubaccountCode: { 
     type: String,
-    default: null // Will be set automatically for tutors on registration
+    default: null
   },
   
   bankDetails: {
@@ -70,7 +65,7 @@ userSchema.index({ googleId: 1 }, { sparse: true });
 
 // Virtual to check if user has payment setup
 userSchema.virtual('hasPaymentSetup').get(function() {
-  return (this.role === 'tutor' && this.paystackSubaccountCode && this.bankDetails.isVerified);
+  return Boolean(this.paystackSubaccountCode && this.bankDetails?.isVerified);
 });
 
 // Virtual to check if user is a Google user

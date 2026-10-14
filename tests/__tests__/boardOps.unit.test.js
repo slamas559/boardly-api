@@ -74,6 +74,67 @@ describe('boardOps', () => {
     expect(validateObject({ ...table, rows: 13, cells: Array(26).fill('') }, BOARD_OBJECT_TYPES)).toBe(false);
   });
 
+  test('board media objects validate hosted assets, supported embeds, and dimensions', () => {
+    const image = {
+      id: 'media1', type: 'media', mediaType: 'image',
+      src: 'https://res.cloudinary.com/demo/image/upload/photo.jpg',
+      page: 0, x: 0, y: 0, w: 640, h: 480,
+    };
+    const video = {
+      ...image, id: 'media2', mediaType: 'video',
+      src: 'https://res.cloudinary.com/demo/video/upload/lesson.mp4', playing: false,
+    };
+    expect(validateObject(image, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(video, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({
+      ...image, id: 'youtube1', mediaType: 'embed', provider: 'youtube',
+      src: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ',
+    }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({
+      ...image, id: 'vimeo1', mediaType: 'embed', provider: 'vimeo',
+      src: 'https://player.vimeo.com/video/123456789',
+    }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({
+      ...image, id: 'direct1', mediaType: 'embed', provider: 'direct',
+      src: 'https://cdn.example.com/lesson.mp4?token=abc',
+    }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({
+      ...image, id: 'sync-embed', mediaType: 'embed', provider: 'youtube',
+      src: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ', playing: true, currentTime: 12.5,
+    }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(image)).toBe(false);
+    expect(validateObject({ ...image, src: 'https://example.com/photo.jpg' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({
+      ...image, id: 'bad-embed', mediaType: 'embed', provider: 'youtube',
+      src: 'https://youtube.com/embed/dQw4w9WgXcQ',
+    }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({
+      ...image, id: 'bad-direct', mediaType: 'embed', provider: 'direct',
+      src: 'https://example.com/page',
+    }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({
+      ...image, id: 'bad-sync', mediaType: 'embed', provider: 'youtube',
+      src: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ', currentTime: -1,
+    }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...image, w: Infinity }, BOARD_OBJECT_TYPES)).toBe(false);
+  });
+
+  test('board operations relay YouTube embed objects to listeners', () => {
+    const objects = new Map();
+    const embed = {
+      id: 'youtube-embed', type: 'media', mediaType: 'embed', provider: 'youtube',
+      src: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ',
+      page: 2, x: 0, y: 0, w: 640, h: 360, playing: false,
+    };
+    const ops = [{ op: 'add', obj: embed }];
+
+    expect(applyOps(objects, ops, { allowedTypes: BOARD_OBJECT_TYPES })).toEqual(ops);
+    expect(objects.get(embed.id)).toEqual(embed);
+    const playbackUpdate = { op: 'update', id: embed.id, patch: { playing: true, currentTime: 12.5 } };
+    expect(applyOps(objects, [playbackUpdate], { allowedTypes: BOARD_OBJECT_TYPES })).toEqual([playbackUpdate]);
+    expect(objects.get(embed.id)).toMatchObject({ playing: true, currentTime: 12.5 });
+  });
+
   test('board operations can relay graph and table objects and updates', () => {
     const objects = new Map();
     const graph = {

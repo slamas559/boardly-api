@@ -327,27 +327,11 @@ router.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
-// Get payment records filtered by user role (student or tutor)
+// Get every payment in which the member was either the payer or the room host.
 router.get('/', protect, async (req, res) => {
   try {
     const userId = req.user._id;
-    const userRole = req.user.role;
-    
-    let query = {};
-    
-    // Filter payments based on user role
-    if (userRole === 'student') {
-      query.studentId = userId;
-    } else if (userRole === 'tutor') {
-      query.tutorId = userId;
-    } else {
-      // If role is neither student nor tutor, return empty array
-      return res.json({ 
-        success: true, 
-        data: [],
-        message: 'No payment records available for this user type'
-      });
-    }
+    const query = { $or: [{ studentId: userId }, { tutorId: userId }] };
 
     const payments = await Payment.find(query)
       .populate('roomId', 'topic code price createdAt')
@@ -386,34 +370,35 @@ router.get('/', protect, async (req, res) => {
         settlement: payment.settlement
       };
 
-      // Add role-specific payment information
-      if (userRole === 'student') {
+      const isHost = payment.tutorId?._id.toString() === userId.toString();
+      if (!isHost) {
         return {
           ...basePayment,
           amount: payment.amount / 100, // Convert to naira for display
           displayAmount: payment.amount / 100,
           type: 'payment', // Student made a payment
           description: `Payment for ${payment.roomId?.topic || 'session'}`,
-          recipient: payment.tutorId?.name || 'Tutor'
-        };
-      } else if (userRole === 'tutor') {
-        return {
-          ...basePayment,
-          amount: payment.splitAmounts?.tutorAmount / 100 || 0, // Tutor's earnings
-          totalAmount: payment.amount / 100, // Total payment amount
-          platformAmount: payment.splitAmounts?.platformAmount / 100 || 0,
-          displayAmount: payment.splitAmounts?.tutorAmount / 100 || 0,
-          type: 'earning', // Tutor received earnings
-          description: `Earnings from ${payment.roomId?.topic || 'session'}`,
-          payer: payment.studentId?.name || 'Student',
-          splitAmounts: {
-            tutorAmount: payment.splitAmounts?.tutorAmount / 100 || 0,
-            platformAmount: payment.splitAmounts?.platformAmount / 100 || 0,
-            tutorPercentage: payment.splitAmounts?.tutorPercentage || 70,
-            platformPercentage: payment.splitAmounts?.platformPercentage || 30
-          }
+          recipient: payment.tutorId?.name || 'Room host'
         };
       }
+
+      return {
+        ...basePayment,
+        isHost: true,
+        amount: payment.splitAmounts?.tutorAmount / 100 || 0,
+        totalAmount: payment.amount / 100,
+        platformAmount: payment.splitAmounts?.platformAmount / 100 || 0,
+        displayAmount: payment.splitAmounts?.tutorAmount / 100 || 0,
+        type: 'earning',
+        description: `Earnings from ${payment.roomId?.topic || 'session'}`,
+        payer: payment.studentId?.name || 'Participant',
+        splitAmounts: {
+          tutorAmount: payment.splitAmounts?.tutorAmount / 100 || 0,
+          platformAmount: payment.splitAmounts?.platformAmount / 100 || 0,
+          tutorPercentage: payment.splitAmounts?.tutorPercentage || 70,
+          platformPercentage: payment.splitAmounts?.platformPercentage || 30
+        }
+      };
     });
 
     // Calculate summary statistics
@@ -428,7 +413,7 @@ router.get('/', protect, async (req, res) => {
         totalRecords,
         successfulPayments: successfulPayments.length,
         totalAmount,
-        userRole,
+        accountType: 'member',
         currency: 'NGN'
       }
     });
@@ -445,26 +430,7 @@ router.get('/', protect, async (req, res) => {
 router.get('/stats', protect, async (req, res) => {
   try {
     const userId = req.user._id;
-    const userRole = req.user.role;
-    
-    let query = {};
-    
-    if (userRole === 'student') {
-      query.studentId = userId;
-    } else if (userRole === 'tutor') {
-      query.tutorId = userId;
-    } else {
-      return res.json({ 
-        success: true, 
-        stats: {
-          totalTransactions: 0,
-          totalAmount: 0,
-          successfulTransactions: 0,
-          pendingTransactions: 0,
-          failedTransactions: 0
-        }
-      });
-    }
+    const query = { $or: [{ studentId: userId }, { tutorId: userId }] };
 
     const payments = await Payment.find(query).populate('roomId', 'topic');
     
@@ -472,31 +438,28 @@ router.get('/stats', protect, async (req, res) => {
     const pendingPayments = payments.filter(p => p.status === 'pending');
     const failedPayments = payments.filter(p => p.status === 'failed');
     
-    let totalAmount = 0;
-    
-    if (userRole === 'student') {
-      totalAmount = successfulPayments.reduce((sum, payment) => sum + payment.amount, 0) / 100;
-    } else if (userRole === 'tutor') {
-      totalAmount = successfulPayments.reduce((sum, payment) => 
-        sum + (payment.splitAmounts?.tutorAmount || 0), 0) / 100;
-    }
+    const totalSpent = successfulPayments
+      .filter((payment) => payment.studentId.toString() === userId.toString())
+      .reduce((sum, payment) => sum + payment.amount, 0) / 100;
+    const totalEarned = successfulPayments
+      .filter((payment) => payment.tutorId.toString() === userId.toString())
+      .reduce((sum, payment) => sum + (payment.splitAmounts?.tutorAmount || 0), 0) / 100;
 
     res.json({
       success: true,
       stats: {
         totalTransactions: payments.length,
-        totalAmount,
+        totalAmount: totalEarned,
+        totalSpent,
+        totalEarned,
         successfulTransactions: successfulPayments.length,
         pendingTransactions: pendingPayments.length,
         failedTransactions: failedPayments.length,
-        userRole,
+        accountType: 'member',
         currency: 'NGN',
-        // Additional role-specific stats
-        ...(userRole === 'tutor' && {
-          pendingEarnings: req.user.earnings?.pending / 100 || 0,
-          totalWithdrawn: req.user.earnings?.withdrawn / 100 || 0,
-          totalEarnings: req.user.earnings?.total / 100 || 0
-        })
+        pendingEarnings: req.user.earnings?.pending / 100 || 0,
+        totalWithdrawn: req.user.earnings?.withdrawn / 100 || 0,
+        totalEarnings: req.user.earnings?.total / 100 || 0
       }
     });
 
@@ -514,21 +477,7 @@ router.get('/receipt/:reference', protect, async (req, res) => {
   try {
     const { reference } = req.params;
     const userId = req.user._id;
-    const userRole = req.user.role;
-    
-    let query = { reference };
-    
-    // Ensure user can only access their own payment records
-    if (userRole === 'student') {
-      query.studentId = userId;
-    } else if (userRole === 'tutor') {
-      query.tutorId = userId;
-    } else {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Access denied' 
-      });
-    }
+    const query = { reference, $or: [{ studentId: userId }, { tutorId: userId }] };
 
     const payment = await Payment.findOne(query)
       .populate('roomId', 'topic code price createdAt creator')
@@ -563,12 +512,12 @@ router.get('/receipt/:reference', protect, async (req, res) => {
       paystackResponse: payment.paystackResponse
     };
 
-    // Add role-specific information
-    if (userRole === 'student') {
+    const isHost = payment.tutorId?._id.toString() === userId.toString();
+    if (!isHost) {
       receipt.amount = payment.amount / 100;
       receipt.type = 'payment';
       receipt.description = `Payment for ${payment.roomId?.topic || 'session'}`;
-    } else if (userRole === 'tutor') {
+    } else {
       receipt.amount = payment.splitAmounts?.tutorAmount / 100 || 0;
       receipt.totalAmount = payment.amount / 100;
       receipt.platformAmount = payment.splitAmounts?.platformAmount / 100 || 0;

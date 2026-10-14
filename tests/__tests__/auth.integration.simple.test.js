@@ -105,7 +105,6 @@ describe('Auth Integration Tests - Simple', () => {
         .post('/auth/google')
         .send({
           credential: 'google-credential-token',
-          role: 'student',
           context: 'register',
           userInfo: {
             email: 'newgoogle@example.com',
@@ -155,7 +154,6 @@ describe('Auth Integration Tests - Simple', () => {
         .post('/auth/google')
         .send({
           credential: 'google-credential-token',
-          role: 'student',
           context: 'register',
           userInfo: {
             email: 'duplicate@example.com',
@@ -270,7 +268,7 @@ describe('Auth Integration Tests - Simple', () => {
 
   describe('GET /auth/stats', () => {
     test('should get user statistics', async () => {
-      const { user, token } = await createAuthenticatedUser({ role: 'tutor' });
+      const { user, token } = await createAuthenticatedUser();
 
       const response = await request(app)
         .get('/auth/stats')

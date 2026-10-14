@@ -8,7 +8,6 @@ export const createTestUser = async (userData = {}) => {
     name: 'Test User',
     email: 'test@example.com',
     password: await bcrypt.hash('password123', 12),
-    role: 'student',
     emailVerified: true,
     ...userData
   };
@@ -16,16 +15,6 @@ export const createTestUser = async (userData = {}) => {
   const user = new User(defaultUser);
   await user.save();
   return user;
-};
-
-// Create a test tutor
-export const createTestTutor = async (userData = {}) => {
-  return createTestUser({
-    name: 'Test Tutor',
-    email: 'tutor@example.com',
-    role: 'tutor',
-    ...userData
-  });
 };
 
 // Create authenticated user with token

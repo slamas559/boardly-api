@@ -11,6 +11,13 @@ const router = express.Router();
 // POST /rooms – create a new room (free or paid)
 router.post("/", protect, async (req, res) => {
   const { topic, isPaid, price, currency } = req.body;
+  const createsPaidRoom = Boolean(isPaid);
+
+  if (createsPaidRoom && !req.user.hasPaymentSetup) {
+    return res.status(403).json({
+      message: "Connect and verify a bank account before creating a paid room."
+    });
+  }
   const code = generateCode();
 
   const newRoom = new Room({
@@ -229,7 +236,7 @@ router.get('/:code/public', async (req, res) => {
     const room = await Room.findOne({ code })
       .populate({
         path: 'creator',
-        select: 'name email role paystackSubaccountCode bankDetails',
+        select: 'name email paystackSubaccountCode bankDetails',
         options: { virtuals: true } // This ensures virtuals are included
       });
 
@@ -272,7 +279,7 @@ router.get('/:code', protect, async (req, res) => {
     const room = await Room.findOne({ code })
       .populate({
         path: 'creator',
-        select: 'name email role paystackSubaccountCode bankDetails',
+        select: 'name email paystackSubaccountCode bankDetails',
         options: { virtuals: true } // This ensures virtuals are included
       })
       .populate('participants.student', 'name email');

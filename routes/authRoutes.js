@@ -29,11 +29,11 @@ const createPaystackSubaccount = async (userData) => {
   // console.log(`userData`, userData)
   try {
     const response = await axios.post('https://api.paystack.co/subaccount', {
-      business_name: `${userData.name} - Teaching Account`,
+      business_name: `${userData.name} - Boardly Payouts`,
       settlement_bank: userData.bankCode,
       account_number: userData.accountNumber,
       percentage_charge: 70,
-      description: `Subaccount for tutor: ${userData.name}`,
+      description: `Boardly payouts for ${userData.name}`,
       primary_contact_email: userData.email,
       primary_contact_name: userData.name,
       metadata: {
@@ -72,7 +72,7 @@ router.get(
 // POST /auth/google - Google OAuth authentication
 router.post("/google", async (req, res) => {
   try {
-    const { credential, role, userInfo, context } = req.body;
+    const { credential, userInfo, context } = req.body;
     
     if (!credential || !userInfo) {
       return res.status(400).json({ message: "Google credential and user info are required" });
@@ -108,7 +108,6 @@ router.post("/google", async (req, res) => {
             _id: user._id,
             name: user.name,
             email: user.email,
-            role: user.role,
           }
         });
       }
@@ -125,7 +124,6 @@ router.post("/google", async (req, res) => {
       user = new User({
         name,
         email,
-        role,
         googleId,
         avatar: picture,
         isGoogleUser: true,
@@ -143,7 +141,6 @@ router.post("/google", async (req, res) => {
           _id: user._id,
           name: user.name,
           email: user.email,
-          role: user.role,
         }
       });
     }
@@ -156,10 +153,10 @@ router.post("/google", async (req, res) => {
 
 // POST /auth/register
 router.post("/register", upload.single("avatar"), async (req, res) => {
-  const { name, email, password, bio, role } = req.body;
+  const { name, email, password, bio } = req.body;
   const avatar = req.file?.path;
   
-  console.log("Registration data:", { name, email, bio, role, avatar: !!avatar });
+  console.log("Registration data:", { name, email, bio, avatar: !!avatar });
   
   try {
     const existing = await User.findOne({ email });
@@ -178,7 +175,6 @@ router.post("/register", upload.single("avatar"), async (req, res) => {
       password: hashed, 
       bio, 
       avatar,
-      role: role || 'student',
       emailVerified: false,
       emailVerificationToken: verificationToken,
       emailVerificationExpires: verificationExpires
@@ -242,7 +238,6 @@ router.get("/verify-email", async (req, res) => {
         _id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role,
         avatar: user.avatar,
         bio: user.bio,
         hasPaymentSetup: user.hasPaymentSetup,
@@ -343,7 +338,6 @@ router.post("/login", async (req, res) => {
         _id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role,
         avatar: user.avatar,
         bio: user.bio,
         hasPaymentSetup: user.hasPaymentSetup,
@@ -375,7 +369,6 @@ router.get("/check-auth", protect, (req, res) => {
       _id: req.user._id,
       name: req.user.name,
       email: req.user.email,
-      role: req.user.role,
       avatar: req.user.avatar
     }
   });
@@ -460,10 +453,6 @@ router.post("/setup-bank", protect, async (req, res) => {
     const { bankCode, accountNumber } = req.body;
     const user = req.user;
 
-    if (user.role !== 'tutor') {
-      return res.status(403).json({ message: 'Only tutors can setup bank accounts' });
-    }
-
     if (!bankCode || !accountNumber) {
       return res.status(400).json({ message: 'Bank code and account number are required' });
     }
@@ -489,23 +478,20 @@ router.post("/setup-bank", protect, async (req, res) => {
 
     const accountName = verifyResponse.data.data.account_name;
 
-    if (user.role === 'tutor') {
-      console.log('Creating Paystack subaccount for tutor...');
-      const subaccountCode = await createPaystackSubaccount({
-        name: user.name,
-        email: user.email,
-        _id: user._id,
-        bankCode: bankCode,
-        accountNumber: accountNumber,
-      });
-      
-      if (subaccountCode) {
-        user.paystackSubaccountCode = subaccountCode;
-        console.log('Subaccount created:', subaccountCode);
-      } else {
-        console.log('Subaccount creation failed, but user registration continues');
-        return res.status(500).json({ message: 'Failed to create payment subaccount' });
-      }
+    console.log('Creating Paystack subaccount...');
+    const subaccountCode = await createPaystackSubaccount({
+      name: user.name,
+      email: user.email,
+      _id: user._id,
+      bankCode,
+      accountNumber,
+    });
+
+    if (subaccountCode) {
+      user.paystackSubaccountCode = subaccountCode;
+      console.log('Subaccount created:', subaccountCode);
+    } else {
+      return res.status(500).json({ message: 'Failed to create payment subaccount' });
     }
 
     user.bankDetails = {
@@ -560,7 +546,6 @@ router.get("/profile", protect, async (req, res) => {
       _id: user._id,
       name: user.name,
       email: user.email,
-      role: user.role,
       avatar: user.avatar,
       bio: user.bio,
       hasPaymentSetup: user.hasPaymentSetup,
@@ -618,7 +603,6 @@ router.put("/profile", protect, upload.single("avatar"), async (req, res) => {
         _id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role,
         avatar: user.avatar,
         bio: user.bio,
         hasPaymentSetup: user.hasPaymentSetup,
