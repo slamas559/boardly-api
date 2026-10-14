@@ -217,4 +217,75 @@ describe('boardOps', () => {
     }, BOARD_OBJECT_TYPES)).toBe(false);
     expect(validateObject({ ...base, mode: 'other' }, BOARD_OBJECT_TYPES)).toBe(false);
   });
+  test('graph slider letters, trace point and key points are validated', () => {
+    const base = {
+      id: 'graph', type: 'graph', page: 0, expression: 'a*x^2 + b', x: 0, y: 0, w: 520, h: 380,
+      xMin: -10, xMax: 10, yMin: -10, yMax: 10,
+    };
+    const params = { a: { value: 2, min: -5, max: 5 }, b: { value: -1, min: -10, max: 10 } };
+    expect(validateObject({ ...base, params }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...base, params: { A: params.a } }, BOARD_OBJECT_TYPES)).toBe(false); // letters only, lower case
+    expect(validateObject({ ...base, params: { ab: params.a } }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...base, params: { a: { value: 2, min: 5, max: -5 } } }, BOARD_OBJECT_TYPES)).toBe(false); // min < max
+    expect(validateObject({ ...base, params: { a: { value: Infinity, min: -5, max: 5 } } }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...base, params: { a: { value: 2e9, min: -5, max: 5 } } }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...base, params: [params.a] }, BOARD_OBJECT_TYPES)).toBe(false);
+    const tooMany = Object.fromEntries('abcdefghijklmn'.split('').map((letter) => [letter, params.a]));
+    expect(validateObject({ ...base, params: tooMany }, BOARD_OBJECT_TYPES)).toBe(false);
+
+    expect(validateObject({ ...base, trace: { x: 3, tangent: true } }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...base, trace: null }, BOARD_OBJECT_TYPES)).toBe(true); // switched off
+    expect(validateObject({ ...base, trace: { x: 'three' } }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...base, trace: { x: 1, tangent: 'yes' } }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...base, keyPoints: true }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...base, keyPoints: 'on' }, BOARD_OBJECT_TYPES)).toBe(false);
+  });
+
+  test('a slider drag arrives as a small update that is relayed and applied', () => {
+    const objects = new Map();
+    const graph = {
+      id: 'g', type: 'graph', page: 0, expression: 'a*x', x: 0, y: 0, w: 520, h: 380,
+      xMin: -10, xMax: 10, yMin: -10, yMax: 10,
+    };
+    applyOps(objects, [{ op: 'add', obj: graph }], { allowedTypes: BOARD_OBJECT_TYPES });
+    const patch = { params: { a: { value: 3, min: -10, max: 10 } } };
+    const applied = applyOps(objects, [{ op: 'update', id: 'g', patch }], { allowedTypes: BOARD_OBJECT_TYPES });
+    expect(applied).toHaveLength(1);
+    expect(objects.get('g').params.a.value).toBe(3);
+    const bad = applyOps(objects, [{ op: 'update', id: 'g', patch: { params: { a: { value: 'x', min: 0, max: 1 } } } }], { allowedTypes: BOARD_OBJECT_TYPES });
+    expect(bad).toHaveLength(0);
+    expect(objects.get('g').params.a.value).toBe(3);
+  });
+  test('equation blocks are board-only objects with bounded LaTeX, size and colour', () => {
+    const equation = {
+      id: 'eq', type: 'equation', page: 0, x: 10, y: 20, w: 240.5, h: 68, latex: 'x = \\frac{-b}{2a}', fontSize: 44, color: '#2540D9',
+    };
+    expect(validateObject(equation, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(equation)).toBe(false); // PDF annotations do not take equations
+    expect(validateObject({ ...equation, latex: '' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, latex: '   ' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, latex: 'x'.repeat(601) }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, latex: 'x'.repeat(600) }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...equation, latex: 42 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, w: 0 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, h: Infinity }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, w: 200000 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, fontSize: 2 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, fontSize: 5000 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, x: NaN }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...equation, color: 'red" onload="x' }, BOARD_OBJECT_TYPES)).toBe(false); // colours go into an image
+    expect(validateObject({ ...equation, color: undefined }, BOARD_OBJECT_TYPES)).toBe(true);
+  });
+
+  test('editing a formula arrives as an update that is validated against the whole object', () => {
+    const objects = new Map();
+    const equation = { id: 'eq', type: 'equation', page: 0, x: 0, y: 0, w: 100, h: 50, latex: 'y = x^{2}', fontSize: 40, color: '#17181C' };
+    expect(applyOps(objects, [{ op: 'add', obj: equation }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1);
+    const edit = { latex: 'y = x^{3}', w: 120, h: 52 };
+    expect(applyOps(objects, [{ op: 'update', id: 'eq', patch: edit }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1);
+    expect(objects.get('eq').latex).toBe('y = x^{3}');
+    expect(applyOps(objects, [{ op: 'update', id: 'eq', patch: { latex: '' } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(0);
+    expect(applyOps(objects, [{ op: 'update', id: 'eq', patch: { fontSize: 'big' } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(0);
+    expect(objects.get('eq').latex).toBe('y = x^{3}');
+  });
 });

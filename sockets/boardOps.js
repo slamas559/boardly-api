@@ -10,7 +10,7 @@ export const OBJECT_TYPES = new Set([
   "highlight",  // legacy PDF highlight (percent rects) - kept so old data still loads
 ]);
 
-export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media"]);
+export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media", "equation"]);
 
 export const LIMITS = {
   maxObjects: 20000,
@@ -23,6 +23,8 @@ export const LIMITS = {
   maxTableColumns: 12,
   maxEquationLength: 120,
   maxInequalityLength: 967,
+  maxGraphParams: 13,
+  maxLatexLength: 600,
 };
 
 const isFiniteNum = (n) => typeof n === "number" && Number.isFinite(n);
@@ -91,6 +93,21 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
         || [obj.uMin, obj.uMax, obj.vMin, obj.vMax].some((value) => Math.abs(value) > 1_000_000)
         || obj.uMin >= obj.uMax || obj.vMin >= obj.vMax) return false;
     }
+    // Slider letters: { a: { value, min, max } }
+    if (obj.params !== undefined) {
+      const entries = obj.params && typeof obj.params === "object" && !Array.isArray(obj.params) ? Object.entries(obj.params) : null;
+      if (!entries || entries.length > LIMITS.maxGraphParams || entries.some(([letter, spec]) =>
+        !/^[a-z]$/.test(letter) || !spec || typeof spec !== "object"
+        || ![spec.value, spec.min, spec.max].every(isFiniteNum)
+        || [spec.value, spec.min, spec.max].some((value) => Math.abs(value) > 1_000_000)
+        || spec.min >= spec.max)) return false;
+    }
+    // Trace point on the curve (null switches it off)
+    if (obj.trace !== undefined && obj.trace !== null) {
+      if (typeof obj.trace !== "object" || Array.isArray(obj.trace) || !isFiniteNum(obj.trace.x) || Math.abs(obj.trace.x) > 1_000_000
+        || (obj.trace.tangent !== undefined && typeof obj.trace.tangent !== "boolean")) return false;
+    }
+    if (obj.keyPoints !== undefined && typeof obj.keyPoints !== "boolean") return false;
     if (obj.geometry !== undefined) {
       const fieldsByKind = {
         point: ["x", "y"],
@@ -119,6 +136,14 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
             || (["segment", "ray"].includes(element.kind) && element.showMeasure !== undefined && typeof element.showMeasure !== "boolean");
         })) return false;
     }
+  }
+  if (obj.type === "equation") {
+    // A typeset formula: LaTeX source plus the box it occupies (the clients typeset it themselves)
+    if (typeof obj.latex !== "string" || obj.latex.trim().length === 0 || obj.latex.length > LIMITS.maxLatexLength) return false;
+    if (![obj.x, obj.y].every(isFiniteNum) || Math.abs(obj.x) > 10_000_000 || Math.abs(obj.y) > 10_000_000) return false;
+    if (!isFiniteNum(obj.w) || obj.w <= 0 || obj.w > 100000 || !isFiniteNum(obj.h) || obj.h <= 0 || obj.h > 100000) return false;
+    if (!isFiniteNum(obj.fontSize) || obj.fontSize < 4 || obj.fontSize > 1000) return false;
+    if (obj.color !== undefined && (typeof obj.color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(obj.color))) return false;
   }
   if (obj.type === "table") {
     if (!Number.isInteger(obj.rows) || obj.rows < 1 || obj.rows > LIMITS.maxTableRows
