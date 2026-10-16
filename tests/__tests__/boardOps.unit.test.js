@@ -288,4 +288,125 @@ describe('boardOps', () => {
     expect(applyOps(objects, [{ op: 'update', id: 'eq', patch: { fontSize: 'big' } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(0);
     expect(objects.get('eq').latex).toBe('y = x^{3}');
   });
+  test('page paper is one small object per page that survives clearing the page', () => {
+    const paper = { id: 'paper-2', type: 'paper', page: 2, kind: 'plane', scale: 1 };
+    expect(validateObject(paper, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(paper)).toBe(false); // PDF annotations have no paper
+    expect(validateObject({ ...paper, kind: 'confetti' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...paper, scale: 3 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...paper, id: 'paper-9' }, BOARD_OBJECT_TYPES)).toBe(false); // id must match the page
+    expect(validateObject({ ...paper, page: undefined }, BOARD_OBJECT_TYPES)).toBe(false);
+
+    const objects = new Map();
+    const shape = { id: 's1', type: 'shape', kind: 'rect', page: 2, x: 0, y: 0, w: 10, h: 10 };
+    applyOps(objects, [{ op: 'add', obj: paper }, { op: 'add', obj: shape }], { allowedTypes: BOARD_OBJECT_TYPES });
+    const applied = applyOps(objects, [{ op: 'clear', page: 2 }], { allowedTypes: BOARD_OBJECT_TYPES });
+    expect(applied).toHaveLength(1);
+    expect(objects.has('paper-2')).toBe(true);
+    expect(objects.has('s1')).toBe(false);
+    expect(applyOps(objects, [{ op: 'update', id: 'paper-2', patch: { kind: 'grid', scale: 2 } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1);
+    expect(objects.get('paper-2').kind).toBe('grid');
+  });
+
+  test('math aids validate their own settings and stay within bounds', () => {
+    const box = { page: 0, x: 10, y: 10, w: 600, h: 300, color: '#2540D9' };
+    const line = { id: 'n', type: 'aid', kind: 'numberline', ...box, min: -5, max: 5, step: 1, marks: [2], jumps: [{ from: 0, to: 3 }] };
+    expect(validateObject(line, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(line)).toBe(false);
+    expect(validateObject({ ...line, min: 5, max: -5 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...line, step: 0 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...line, step: 0.001 }, BOARD_OBJECT_TYPES)).toBe(false); // more than 200 ticks
+    expect(validateObject({ ...line, marks: Array.from({ length: 13 }, (_, i) => i) }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...line, jumps: Array.from({ length: 9 }, () => ({ from: 0, to: 1 })) }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...line, jumps: [{ from: 'a', to: 1 }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...line, w: 5 }, BOARD_OBJECT_TYPES)).toBe(false);
+
+    const circle = { id: 'u', type: 'aid', kind: 'unitcircle', ...box, angle: 45, snap: true, radians: false, showTriangle: true, showValues: true };
+    expect(validateObject(circle, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...circle, angle: 5000 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...circle, angle: NaN }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...circle, snap: 'yes' }, BOARD_OBJECT_TYPES)).toBe(false);
+
+    const bars = { id: 'f', type: 'aid', kind: 'fractions', ...box, shape: 'pie', bars: [{ parts: 4, shaded: 1 }, { parts: 8, shaded: 8 }] };
+    expect(validateObject(bars, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...bars, bars: [] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...bars, bars: Array.from({ length: 5 }, () => ({ parts: 2, shaded: 1 })) }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...bars, bars: [{ parts: 4, shaded: 5 }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...bars, bars: [{ parts: 1000, shaded: 1 }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...bars, bars: [{ parts: 2.5, shaded: 1 }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...bars, shape: 'cube' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...bars, color: 'red" onload="x' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ id: 'z', type: 'aid', kind: 'mystery', ...box }, BOARD_OBJECT_TYPES)).toBe(false);
+  });
+  test('geometry instruments are board-only objects with bounded size and rotation', () => {
+    const ruler = { id: 'r', type: 'instrument', kind: 'ruler', page: 0, x: 100, y: 120, w: 520, angle: 30 };
+    expect(validateObject(ruler, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(ruler)).toBe(false); // not for PDF pages
+    for (const kind of ['protractor', 'square45', 'square3060']) {
+      expect(validateObject({ ...ruler, kind, w: 400 }, BOARD_OBJECT_TYPES)).toBe(true);
+    }
+    expect(validateObject({ ...ruler, kind: 'compass' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...ruler, w: 50 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...ruler, w: 5000 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...ruler, kind: 'square45', w: 1500 }, BOARD_OBJECT_TYPES)).toBe(false); // each kind has its own limits
+    expect(validateObject({ ...ruler, angle: 9999 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...ruler, angle: NaN }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...ruler, x: Infinity }, BOARD_OBJECT_TYPES)).toBe(false);
+    const objects = new Map();
+    applyOps(objects, [{ op: 'add', obj: ruler }], { allowedTypes: BOARD_OBJECT_TYPES });
+    expect(applyOps(objects, [{ op: 'update', id: 'r', patch: { angle: 45.5 } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1);
+    expect(applyOps(objects, [{ op: 'update', id: 'r', patch: { w: 10 } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(0);
+    expect(objects.get('r').angle).toBe(45.5);
+  });
+
+  test('shapes can carry a measurement flag', () => {
+    const shape = { id: 's', type: 'shape', kind: 'triangle', page: 0, x1: 0, y1: 0, x2: 100, y2: 80, color: '#2540D9', width: 4 };
+    expect(validateObject({ ...shape, measure: true }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...shape, measure: 'yes' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...shape, measure: true })).toBe(true); // shapes also exist on PDF pages
+  });
+  test('statistics charts validate their data and settings and stay small enough to relay', () => {
+    const chart = {
+      id: 'c', type: 'stats', page: 0, chart: 'histogram', x: 0, y: 0, w: 760, h: 440, color: '#2540D9',
+      columns: [{ name: 'Score', values: [45, 52, 58.5, null, 91] }], showStats: true, showMean: true, sd: 'sample',
+    };
+    expect(validateObject(chart, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(chart)).toBe(false); // board only
+    for (const kind of ['box', 'scatter']) expect(validateObject({ ...chart, chart: kind }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...chart, chart: 'pie' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, columns: [] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, columns: Array.from({ length: 5 }, () => chart.columns[0]) }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, columns: [{ name: 'x', values: Array.from({ length: 301 }, (_, i) => i) }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, columns: [{ name: 'x', values: Array.from({ length: 300 }, (_, i) => i) }] }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...chart, columns: [{ name: 'x', values: [1, 'two'] }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, columns: [{ name: 'x', values: [1, NaN] }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, columns: [{ name: 'x', values: [1e12] }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, columns: [{ name: 'n'.repeat(41), values: [1] }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, columns: [{ values: [1] }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, binWidth: 5 }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...chart, binWidth: null }, BOARD_OBJECT_TYPES)).toBe(true); // back to automatic
+    expect(validateObject({ ...chart, binWidth: 0 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, binWidth: -2 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, sd: 'both' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, title: 'Class 4B' }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...chart, title: 't'.repeat(81) }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, showMean: 'yes' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, w: 50 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...chart, color: 'blue" x="' }, BOARD_OBJECT_TYPES)).toBe(false);
+    // A full chart (4 columns of 300 values) is far below the object size limits
+    const full = { ...chart, columns: Array.from({ length: 4 }, (_, c) => ({ name: `Group ${c}`, values: Array.from({ length: 300 }, (_, i) => 1234.5678 + i) })) };
+    expect(validateObject(full, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(JSON.stringify(full).length).toBeLessThan(32 * 1024);
+  });
+
+  test('pasting new data arrives as an update and is checked like a new chart', () => {
+    const objects = new Map();
+    const chart = { id: 'c', type: 'stats', page: 0, chart: 'scatter', x: 0, y: 0, w: 760, h: 460, columns: [{ name: 'x', values: [1, 2] }, { name: 'y', values: [2, 4] }] };
+    applyOps(objects, [{ op: 'add', obj: chart }], { allowedTypes: BOARD_OBJECT_TYPES });
+    const columns = [{ name: 'Hours', values: [1, 2, 3] }, { name: 'Score', values: [50, 60, null] }];
+    expect(applyOps(objects, [{ op: 'update', id: 'c', patch: { columns } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1);
+    expect(objects.get('c').columns[1].values[2]).toBeNull();
+    expect(applyOps(objects, [{ op: 'update', id: 'c', patch: { columns: [{ name: 'bad', values: ['a'] }] } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(0);
+    expect(objects.get('c').columns[0].name).toBe('Hours');
+  });
 });

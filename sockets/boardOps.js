@@ -10,7 +10,9 @@ export const OBJECT_TYPES = new Set([
   "highlight",  // legacy PDF highlight (percent rects) - kept so old data still loads
 ]);
 
-export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media", "equation"]);
+export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media", "equation", "paper", "aid", "instrument", "stats"]);
+export const INSTRUMENT_KINDS = { ruler: [160, 1600], protractor: [160, 1200], square45: [120, 1000], square3060: [160, 1200] };
+export const PAPER_KINDS = new Set(["dots", "grid", "plane", "isometric", "lined", "blank"]);
 
 export const LIMITS = {
   maxObjects: 20000,
@@ -25,6 +27,13 @@ export const LIMITS = {
   maxInequalityLength: 967,
   maxGraphParams: 13,
   maxLatexLength: 600,
+  maxNumberLineTicks: 200,
+  maxNumberLineMarks: 12,
+  maxNumberLineJumps: 8,
+  maxFractionBars: 4,
+  maxFractionParts: 24,
+  maxStatsColumns: 4,
+  maxStatsRows: 300,
 };
 
 const isFiniteNum = (n) => typeof n === "number" && Number.isFinite(n);
@@ -137,6 +146,64 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
         })) return false;
     }
   }
+  if (obj.type === "paper") {
+    // The pattern behind a page: one per page, with the id "paper-<page>"
+    if (!PAPER_KINDS.has(obj.kind) || ![0.5, 1, 2].includes(obj.scale ?? 1)) return false;
+    if (!Number.isInteger(obj.page) || obj.page < 0 || obj.id !== `paper-${obj.page}`) return false;
+  }
+  if (obj.type === "stats") {
+    // A data chart: the numbers themselves plus a few display settings
+    if (!["histogram", "box", "scatter"].includes(obj.chart)) return false;
+    if (![obj.x, obj.y].every(isFiniteNum) || Math.abs(obj.x) > 10_000_000 || Math.abs(obj.y) > 10_000_000) return false;
+    if (![obj.w, obj.h].every((n) => isFiniteNum(n) && n >= 200 && n <= 20000)) return false;
+    if (obj.color !== undefined && (typeof obj.color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(obj.color))) return false;
+    if (!Array.isArray(obj.columns) || obj.columns.length < 1 || obj.columns.length > LIMITS.maxStatsColumns) return false;
+    const goodColumn = (column) => column && typeof column === "object" && typeof column.name === "string" && column.name.length <= 40
+      && Array.isArray(column.values) && column.values.length <= LIMITS.maxStatsRows
+      && column.values.every((v) => v === null || (isFiniteNum(v) && Math.abs(v) <= 1_000_000_000));
+    if (!obj.columns.every(goodColumn)) return false;
+    if (obj.binWidth !== undefined && obj.binWidth !== null && !(isFiniteNum(obj.binWidth) && obj.binWidth > 0 && obj.binWidth <= 1_000_000_000)) return false;
+    if (obj.sd !== undefined && !["sample", "population"].includes(obj.sd)) return false;
+    if (obj.title !== undefined && obj.title !== null && (typeof obj.title !== "string" || obj.title.length > 80)) return false;
+    for (const flag of ["showStats", "showMean", "showMedian", "showCounts", "showValues", "showLine", "showEquation"]) {
+      if (obj[flag] !== undefined && typeof obj[flag] !== "boolean") return false;
+    }
+  }
+  if (obj.type === "instrument") {
+    // Ruler, protractor or set square: where it sits, how big it is and how far it is turned
+    const range = INSTRUMENT_KINDS[obj.kind];
+    if (!range) return false;
+    if (![obj.x, obj.y].every(isFiniteNum) || Math.abs(obj.x) > 10_000_000 || Math.abs(obj.y) > 10_000_000) return false;
+    if (!isFiniteNum(obj.w) || obj.w < range[0] || obj.w > range[1]) return false;
+    if (!isFiniteNum(obj.angle) || obj.angle < -720 || obj.angle > 720) return false;
+  }
+  if (obj.type === "shape" && obj.measure !== undefined && typeof obj.measure !== "boolean") return false;
+  if (obj.type === "aid") {
+    // Teaching aids: a number line, a unit circle or fraction bars, each with a few bounded settings
+    if (![obj.x, obj.y].every(isFiniteNum) || Math.abs(obj.x) > 10_000_000 || Math.abs(obj.y) > 10_000_000) return false;
+    if (![obj.w, obj.h].every((n) => isFiniteNum(n) && n >= 20 && n <= 20000)) return false;
+    if (obj.color !== undefined && (typeof obj.color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(obj.color))) return false;
+    const numbers = (list, max) => Array.isArray(list) && list.length <= max && list.every((n) => isFiniteNum(n) && Math.abs(n) <= 1_000_000);
+    if (obj.kind === "numberline") {
+      if (![obj.min, obj.max, obj.step].every(isFiniteNum) || obj.min >= obj.max || obj.step <= 0 || Math.abs(obj.min) > 1_000_000 || Math.abs(obj.max) > 1_000_000) return false;
+      if ((obj.max - obj.min) / obj.step > LIMITS.maxNumberLineTicks) return false;
+      if (obj.marks !== undefined && !numbers(obj.marks, LIMITS.maxNumberLineMarks)) return false;
+      if (obj.jumps !== undefined && !(Array.isArray(obj.jumps) && obj.jumps.length <= LIMITS.maxNumberLineJumps
+        && obj.jumps.every((j) => j && typeof j === "object" && numbers([j.from, j.to], 2)))) return false;
+    } else if (obj.kind === "unitcircle") {
+      if (!isFiniteNum(obj.angle) || obj.angle < -720 || obj.angle > 720) return false;
+      for (const flag of ["snap", "radians", "showTriangle", "showValues"]) {
+        if (obj[flag] !== undefined && typeof obj[flag] !== "boolean") return false;
+      }
+    } else if (obj.kind === "fractions") {
+      if (obj.shape !== undefined && !["bar", "pie"].includes(obj.shape)) return false;
+      if (!Array.isArray(obj.bars) || obj.bars.length < 1 || obj.bars.length > LIMITS.maxFractionBars) return false;
+      if (!obj.bars.every((bar) => bar && Number.isInteger(bar.parts) && bar.parts >= 1 && bar.parts <= LIMITS.maxFractionParts
+        && Number.isInteger(bar.shaded) && bar.shaded >= 0 && bar.shaded <= bar.parts)) return false;
+    } else {
+      return false;
+    }
+  }
   if (obj.type === "equation") {
     // A typeset formula: LaTeX source plus the box it occupies (the clients typeset it themselves)
     if (typeof obj.latex !== "string" || obj.latex.trim().length === 0 || obj.latex.length > LIMITS.maxLatexLength) return false;
@@ -236,7 +303,8 @@ export function applyOps(objects, ops, { allowedTypes = OBJECT_TYPES } = {}) {
         // Remove every object on a page (or everything when page is omitted)
         const page = op.page;
         for (const [id, o] of objects) {
-          if (page === undefined || o.page === page) objects.delete(id);
+          // A page's paper stays when its contents are cleared
+          if (o.type !== "paper" && (page === undefined || o.page === page)) objects.delete(id);
         }
         applied.push({ op: "clear", page });
         break;
