@@ -5,6 +5,7 @@ import audioEvents from "./audio.js";
 import chatEvents from "./chat.js";
 import viewEvents from "./view.js";
 import qaEvents from "./qa.js";
+import activityEvents, { cleanText, releaseActivity, sendActivityState } from "./activity.js";
 import recordingEvents, { isRoomRecording } from "./recording.js";
 import Room from "../models/Room.js";
 import jwt from "jsonwebtoken";
@@ -62,6 +63,11 @@ export default function socketManager(io) {
 
         socket.join(roomId);
         joinedRooms.set(socket.id, roomId);
+
+        // Who this is for class activities: a display name, and (for guests) the browser's own id so that
+        // reconnecting does not let someone answer twice
+        socket.data.displayName = cleanText(user?.name, 40) || "Guest";
+        socket.data.clientId = typeof user?.clientId === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(user.clientId) ? user.clientId : null;
         
         // Decide host status on the server: the verified user must be the room's creator
         const state = await getRoomState(roomId);
@@ -76,6 +82,7 @@ export default function socketManager(io) {
         if (state) {
           socket.emit("room-state", { ...serializeState(state), isHost, isRecording: isRoomRecording(roomId) });
           socket.emit("change-view", state.view);
+          sendActivityState(socket, roomId); // a question that is already running
         }
 
         // Broadcast updated user count to all users in the room
@@ -97,6 +104,7 @@ export default function socketManager(io) {
     chatEvents(socket, io);
     viewEvents(socket, io);
     qaEvents(socket, io);
+    activityEvents(socket, io);
     recordingEvents(socket, io);
 
     socket.on("disconnect", () => {
@@ -185,6 +193,7 @@ function removeUserFromRoom(socketId, roomId) {
     // Clean up empty room and persist its live state
     if (roomUserSet.size === 0) {
       roomUsers.delete(roomId);
+      releaseActivity(roomId);
       releaseRoomState(roomId).catch((err) => console.error("Failed to release room state:", err.message));
     }
   }

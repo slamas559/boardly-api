@@ -10,7 +10,7 @@ export const OBJECT_TYPES = new Set([
   "highlight",  // legacy PDF highlight (percent rects) - kept so old data still loads
 ]);
 
-export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media", "equation", "paper", "aid", "instrument", "stats"]);
+export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media", "equation", "paper", "aid", "instrument", "stats", "cover"]);
 export const INSTRUMENT_KINDS = { ruler: [160, 1600], protractor: [160, 1200], square45: [120, 1000], square3060: [160, 1200] };
 export const PAPER_KINDS = new Set(["dots", "grid", "plane", "isometric", "lined", "blank"]);
 
@@ -151,6 +151,14 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
     if (!PAPER_KINDS.has(obj.kind) || ![0.5, 1, 2].includes(obj.scale ?? 1)) return false;
     if (!Number.isInteger(obj.page) || obj.page < 0 || obj.id !== `paper-${obj.page}`) return false;
   }
+  if (obj.type === "cover") {
+    // A panel that hides part of the board from students until the host reveals it
+    if (![obj.x, obj.y].every(isFiniteNum) || Math.abs(obj.x) > 10_000_000 || Math.abs(obj.y) > 10_000_000) return false;
+    if (!isFiniteNum(obj.w) || obj.w < 40 || obj.w > 20000 || !isFiniteNum(obj.h) || obj.h < 30 || obj.h > 20000) return false;
+    if (obj.open !== undefined && typeof obj.open !== "boolean") return false;
+    if (obj.label !== undefined && obj.label !== null && (typeof obj.label !== "string" || obj.label.length > 30)) return false;
+    if (obj.color !== undefined && (typeof obj.color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(obj.color))) return false;
+  }
   if (obj.type === "stats") {
     // A data chart: the numbers themselves plus a few display settings
     if (!["histogram", "box", "scatter"].includes(obj.chart)) return false;
@@ -195,6 +203,12 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
       for (const flag of ["snap", "radians", "showTriangle", "showValues"]) {
         if (obj[flag] !== undefined && typeof obj[flag] !== "boolean") return false;
       }
+    } else if (obj.kind === "pollbars") {
+      // Poll results put on the board: a label and a count for each choice
+      if (!Array.isArray(obj.bars) || obj.bars.length < 1 || obj.bars.length > 6) return false;
+      if (!obj.bars.every((bar) => bar && typeof bar.label === "string" && bar.label.length <= 80 && Number.isInteger(bar.count) && bar.count >= 0 && bar.count <= 100000)) return false;
+      if (obj.correct !== undefined && obj.correct !== null && !(Number.isInteger(obj.correct) && obj.correct >= 0 && obj.correct < obj.bars.length)) return false;
+      if (obj.title !== undefined && obj.title !== null && (typeof obj.title !== "string" || obj.title.length > 240)) return false;
     } else if (obj.kind === "fractions") {
       if (obj.shape !== undefined && !["bar", "pie"].includes(obj.shape)) return false;
       if (!Array.isArray(obj.bars) || obj.bars.length < 1 || obj.bars.length > LIMITS.maxFractionBars) return false;

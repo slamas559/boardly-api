@@ -409,4 +409,35 @@ describe('boardOps', () => {
     expect(applyOps(objects, [{ op: 'update', id: 'c', patch: { columns: [{ name: 'bad', values: ['a'] }] } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(0);
     expect(objects.get('c').columns[0].name).toBe('Hours');
   });
+  test('covers that hide part of the board are bounded and board-only', () => {
+    const cover = { id: 'cv', type: 'cover', page: 0, x: 100, y: 80, w: 300, h: 120, open: false, label: 'Answer', color: '#E2492B' };
+    expect(validateObject(cover, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(cover)).toBe(false);
+    expect(validateObject({ ...cover, open: true }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...cover, open: 'yes' }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...cover, label: undefined, color: undefined }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...cover, label: 'L'.repeat(31) }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...cover, w: 10 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...cover, h: 99999 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...cover, x: NaN }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...cover, color: 'red" x="' }, BOARD_OBJECT_TYPES)).toBe(false);
+    const objects = new Map();
+    applyOps(objects, [{ op: 'add', obj: cover }], { allowedTypes: BOARD_OBJECT_TYPES });
+    expect(applyOps(objects, [{ op: 'update', id: 'cv', patch: { open: true } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1); // reveal
+    expect(objects.get('cv').open).toBe(true);
+  });
+
+  test('poll results placed on the board are checked', () => {
+    const box = { page: 0, x: 0, y: 0, w: 560, h: 300, color: '#2540D9' };
+    const poll = { id: 'p', type: 'aid', kind: 'pollbars', ...box, title: 'What is 2 + 2?', bars: [{ label: '3', count: 2 }, { label: '4', count: 14 }, { label: '5', count: 1 }], correct: 1 };
+    expect(validateObject(poll, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...poll, correct: undefined }, BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject({ ...poll, correct: 3 }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...poll, bars: [] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...poll, bars: Array.from({ length: 7 }, () => ({ label: 'a', count: 1 })) }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...poll, bars: [{ label: 'a', count: -1 }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...poll, bars: [{ label: 'a', count: 1.5 }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...poll, bars: [{ label: 'a'.repeat(81), count: 1 }] }, BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...poll, title: 't'.repeat(241) }, BOARD_OBJECT_TYPES)).toBe(false);
+  });
 });
