@@ -26,6 +26,30 @@ describe('boardOps', () => {
     expect(applyOps(objects, [{ op: 'update', id: 'missing', patch: { color: '#fff' } }])).toHaveLength(0);
   });
 
+  test('grouping is just a groupId patch that can be set and cleared', () => {
+    const objects = new Map();
+    applyOps(objects, [{ op: 'add', obj: stroke('a') }, { op: 'add', obj: stroke('b') }]);
+    const grouped = applyOps(objects, [
+      { op: 'update', id: 'a', patch: { groupId: 'g1' } },
+      { op: 'update', id: 'b', patch: { groupId: 'g1' } },
+    ]);
+    expect(grouped).toHaveLength(2);
+    expect(objects.get('a').groupId).toBe('g1');
+    expect(applyOps(objects, [{ op: 'update', id: 'a', patch: { groupId: null } }])).toHaveLength(1);
+    expect(objects.get('a').groupId).toBeNull();
+    expect(validateObject(stroke('c', { groupId: 'g2' }))).toBe(true);
+  });
+
+  test('rejects malformed group ids', () => {
+    const objects = new Map();
+    applyOps(objects, [{ op: 'add', obj: stroke('a') }]);
+    for (const bad of [42, '', 'x'.repeat(49), {}, ['g']]) {
+      expect(applyOps(objects, [{ op: 'update', id: 'a', patch: { groupId: bad } }])).toHaveLength(0);
+      expect(validateObject(stroke('z', { groupId: bad }))).toBe(false);
+    }
+    expect(objects.get('a').groupId).toBeUndefined();
+  });
+
   test('clear removes only the requested page', () => {
     const objects = new Map();
     applyOps(objects, [

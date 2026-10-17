@@ -46,6 +46,9 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
     // PDF pages are 1-based, board pages 0-based; both are small non-negative integers
     return false;
   }
+  // Objects glued together by the group tool share a groupId (null / absent when not grouped)
+  if (obj.groupId !== undefined && obj.groupId !== null
+    && (typeof obj.groupId !== "string" || obj.groupId.length === 0 || obj.groupId.length > 48)) return false;
   if (obj.type === "stroke") {
     if (!Array.isArray(obj.points) || obj.points.length > LIMITS.maxPoints) return false;
   }
