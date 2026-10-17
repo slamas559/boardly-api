@@ -7,6 +7,9 @@ import socketManager from './sockets/index.js';
 connectDB();
 
 const server = http.createServer(app);
+// Node closes any request that takes longer than 5 minutes to arrive, which cuts off a long recording on a slow
+// connection. Give uploads up to 30 minutes.
+server.requestTimeout = 30 * 60 * 1000;
 const io = new Server(server, {
   cors: {
     origin: ["https://boardly-chi.vercel.app", "http://localhost:5173"], // update with frontend URL in production

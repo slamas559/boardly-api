@@ -40,6 +40,45 @@ export default function socketManager(io) {
     next();
   });
 
+  // Drop sockets that have been idle too long. This runs once for the whole server (it used to be started again
+  // for every connection, which piled up timers and shutdown listeners).
+  const cleanupInterval = setInterval(() => {
+    const now = Date.now();
+    const TIMEOUT = 30 * 60 * 1000; // 30 minutes timeout
+    const STALE_CONNECTIONS = [];
+
+    for (const [userId, connection] of activeUsers.entries()) {
+      if (now - connection.timestamp > TIMEOUT) {
+        STALE_CONNECTIONS.push(userId);
+
+        // Try to disconnect the stale socket if it still exists
+        const staleSocket = io.sockets.sockets.get(connection.socketId);
+        if (staleSocket) {
+          console.log(`Cleaning up stale connection for user ${userId}`);
+          staleSocket.emit("session-timeout", {
+            message: "Your session has timed out due to inactivity"
+          });
+          staleSocket.disconnect(true);
+        }
+      }
+    }
+
+    // Remove stale connections
+    STALE_CONNECTIONS.forEach(userId => {
+      activeUsers.delete(userId);
+    });
+
+    if (STALE_CONNECTIONS.length > 0) {
+      console.log(`Cleaned up ${STALE_CONNECTIONS.length} stale connections`);
+    }
+  }, 5 * 60 * 1000); // Run cleanup every 5 minutes
+  cleanupInterval.unref?.(); // never keep the process (or a test run) alive just for this timer
+
+  // Clean up interval on server shutdown
+  process.once('SIGTERM', () => {
+    clearInterval(cleanupInterval);
+  });
+
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
@@ -124,42 +163,6 @@ export default function socketManager(io) {
     socket.on("error", (error) => {
       console.error("Socket error:", error);
     });
-
-    const cleanupInterval = setInterval(() => {
-    const now = Date.now();
-    const TIMEOUT = 30 * 60 * 1000; // 30 minutes timeout
-    const STALE_CONNECTIONS = [];
-
-    for (const [userId, connection] of activeUsers.entries()) {
-      if (now - connection.timestamp > TIMEOUT) {
-        STALE_CONNECTIONS.push(userId);
-        
-        // Try to disconnect the stale socket if it still exists
-        const staleSocket = io.sockets.sockets.get(connection.socketId);
-        if (staleSocket) {
-          console.log(`Cleaning up stale connection for user ${userId}`);
-          staleSocket.emit("session-timeout", {
-            message: "Your session has timed out due to inactivity"
-          });
-          staleSocket.disconnect(true);
-        }
-      }
-    }
-
-    // Remove stale connections
-    STALE_CONNECTIONS.forEach(userId => {
-      activeUsers.delete(userId);
-    });
-
-    if (STALE_CONNECTIONS.length > 0) {
-      console.log(`Cleaned up ${STALE_CONNECTIONS.length} stale connections`);
-    }
-  }, 5 * 60 * 1000); // Run cleanup every 5 minutes
-
-  // Clean up interval on server shutdown
-  process.on('SIGTERM', () => {
-    clearInterval(cleanupInterval);
-  });
   });
 }
 

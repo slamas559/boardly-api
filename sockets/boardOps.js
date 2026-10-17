@@ -36,6 +36,10 @@ export const LIMITS = {
   maxStatsRows: 300,
 };
 
+// Brush look of a freehand stroke (Pen / Marker); keep in step with the client's brushes.js
+export const STROKE_TEXTURES = new Set(["smooth", "pencil", "chalk", "brush"]);
+export const STROKE_PATTERNS = new Set(["solid", "dashed", "dotted"]);
+
 const isFiniteNum = (n) => typeof n === "number" && Number.isFinite(n);
 
 export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
@@ -49,8 +53,12 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
   // Objects glued together by the group tool share a groupId (null / absent when not grouped)
   if (obj.groupId !== undefined && obj.groupId !== null
     && (typeof obj.groupId !== "string" || obj.groupId.length === 0 || obj.groupId.length > 48)) return false;
+  // Stacking order on the page (bring to front / send to back); a missing z is layer 0
+  if (obj.z !== undefined && !(isFiniteNum(obj.z) && Math.abs(obj.z) <= 1_000_000)) return false;
   if (obj.type === "stroke") {
     if (!Array.isArray(obj.points) || obj.points.length > LIMITS.maxPoints) return false;
+    if (obj.texture !== undefined && !STROKE_TEXTURES.has(obj.texture)) return false;
+    if (obj.pattern !== undefined && !STROKE_PATTERNS.has(obj.pattern)) return false;
   }
   if (obj.type === "text" && typeof obj.text === "string" && obj.text.length > LIMITS.maxTextLength) return false;
   if (obj.type === "markup" && (!Array.isArray(obj.rects) || obj.rects.length > LIMITS.maxRects)) return false;
@@ -354,6 +362,9 @@ export function applyStrokeChunk(objects, { id, page, meta, points }) {
       color: typeof meta.color === "string" ? meta.color.slice(0, 40) : "#000000",
       width: isFiniteNum(meta.width) ? meta.width : 3,
       opacity: isFiniteNum(meta.opacity) ? meta.opacity : 1,
+      ...(isFiniteNum(meta.z) && meta.z !== 0 && Math.abs(meta.z) <= 1_000_000 ? { z: meta.z } : {}),
+      texture: STROKE_TEXTURES.has(meta.texture) ? meta.texture : "smooth",
+      pattern: STROKE_PATTERNS.has(meta.pattern) ? meta.pattern : "solid",
       points: [],
     };
   }

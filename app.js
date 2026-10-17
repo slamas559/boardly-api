@@ -31,7 +31,8 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  // The recording upload sends its duration and title as custom headers, which the browser must be allowed to send
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Recording-Duration', 'X-Recording-Title'],
   optionsSuccessStatus: 200,
   maxAge: 86400 // 24 hours
 }));

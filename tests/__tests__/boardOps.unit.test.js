@@ -464,4 +464,49 @@ describe('boardOps', () => {
     expect(validateObject({ ...poll, bars: [{ label: 'a'.repeat(81), count: 1 }] }, BOARD_OBJECT_TYPES)).toBe(false);
     expect(validateObject({ ...poll, title: 't'.repeat(241) }, BOARD_OBJECT_TYPES)).toBe(false);
   });
+  test('brush texture and pattern are kept for live strokes and checked on add and update', () => {
+    const objects = new Map();
+    const meta = { tool: 'pen', color: '#000', width: 4, opacity: 1, texture: 'chalk', pattern: 'dashed' };
+    const s = applyStrokeChunk(objects, { id: 'b1', page: 0, meta, points: [[0, 0, 0.5], [3, 3, 0.5]] });
+    expect(s.texture).toBe('chalk');
+    expect(s.pattern).toBe('dashed');
+
+    const odd = applyStrokeChunk(objects, { id: 'b2', page: 0, meta: { ...meta, texture: 'glitter', pattern: 'wavy' }, points: [[0, 0, 0.5]] });
+    expect(odd.texture).toBe('smooth');
+    expect(odd.pattern).toBe('solid');
+
+    expect(validateObject(stroke('b3', { texture: 'pencil', pattern: 'dotted' }))).toBe(true);
+    expect(validateObject(stroke('b4', { texture: 'glitter' }))).toBe(false);
+    expect(validateObject(stroke('b5', { pattern: 'wavy' }))).toBe(false);
+
+    applyOps(objects, [{ op: 'add', obj: stroke('b6') }]);
+    expect(applyOps(objects, [{ op: 'update', id: 'b6', patch: { texture: 'brush' } }])).toHaveLength(1);
+    expect(applyOps(objects, [{ op: 'update', id: 'b6', patch: { texture: 'glitter' } }])).toHaveLength(0);
+    expect(objects.get('b6').texture).toBe('brush');
+  });
+
+  test('shapes accept none, tint and solid fills', () => {
+    const shape = (id, fill) => ({ id, type: 'shape', kind: 'rect', page: 0, x1: 0, y1: 0, x2: 10, y2: 10, color: '#000', width: 3, fill });
+    for (const fill of [false, true, 'tint', 'solid']) expect(validateObject(shape('f', fill))).toBe(true);
+    const objects = new Map();
+    applyOps(objects, [{ op: 'add', obj: shape('f1', false) }, { op: 'update', id: 'f1', patch: { fill: 'solid' } }]);
+    expect(objects.get('f1').fill).toBe('solid');
+  });
+  test('layer order (z) is validated, kept on live strokes and can be updated', () => {
+    expect(validateObject(stroke('z1', { z: 7 }))).toBe(true);
+    expect(validateObject(stroke('z2', { z: -3 }))).toBe(true);
+    expect(validateObject(stroke('z3', { z: 'top' }))).toBe(false);
+    expect(validateObject(stroke('z4', { z: Infinity }))).toBe(false);
+    expect(validateObject(stroke('z5', { z: 5_000_000 }))).toBe(false);
+
+    const objects = new Map();
+    const live = applyStrokeChunk(objects, { id: 'z6', page: 0, meta: { tool: 'pen', color: '#000', width: 3, z: 12 }, points: [[0, 0, 0.5]] });
+    expect(live.z).toBe(12);
+    expect(applyStrokeChunk(objects, { id: 'z7', page: 0, meta: { tool: 'pen', color: '#000', width: 3 }, points: [[0, 0, 0.5]] }).z).toBeUndefined();
+
+    applyOps(objects, [{ op: 'add', obj: stroke('z8') }]);
+    expect(applyOps(objects, [{ op: 'update', id: 'z8', patch: { z: 4 } }])).toHaveLength(1);
+    expect(objects.get('z8').z).toBe(4);
+    expect(applyOps(objects, [{ op: 'update', id: 'z8', patch: { z: 'x' } }])).toHaveLength(0);
+  });
 });
