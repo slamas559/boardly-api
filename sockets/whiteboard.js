@@ -1,18 +1,19 @@
 // sockets/whiteboard.js
-// Realtime whiteboard events. Only the verified host (room creator) may change the board;
-// everyone else in the room is a read-only listener.
-import { applyOps, applyStrokeChunk, BOARD_OBJECT_TYPES, validateObject } from "./boardOps.js";
+// Realtime whiteboard events. The verified host (room creator) controls the board; a listener the host has
+// let draw can add to it and change only their own objects. Page, view and pointer control stay with the host.
+import { applyOps, applyStrokeChunk, BOARD_OBJECT_TYPES, limitGuestOps, validateObject } from "./boardOps.js";
 import { getRoomState, markDirty } from "./roomState.js";
-import { requireHost } from "./permissions.js";
+import { canDraw, isHost, participantKey, requireHost } from "./permissions.js";
 
 export default function whiteboardEvents(socket, io) {
   // Batched object operations: add / update / remove / clear
   socket.on("board-op", async ({ room, ops } = {}) => {
-    if (!requireHost(socket, room)) return;
+    if (!canDraw(socket, room)) return;
     const state = await getRoomState(room);
     if (!state) return;
 
-    const applied = applyOps(state.board.objects, ops, { allowedTypes: BOARD_OBJECT_TYPES });
+    const allowed = isHost(socket, room) ? ops : limitGuestOps(state.board.objects, ops, participantKey(socket));
+    const applied = applyOps(state.board.objects, allowed, { allowedTypes: BOARD_OBJECT_TYPES });
     if (applied.length === 0) return;
 
     // Keep the page counter honest if objects reference pages beyond it
@@ -27,20 +28,21 @@ export default function whiteboardEvents(socket, io) {
 
   // Live freehand streaming (points arrive in small chunks while the host is still drawing)
   socket.on("board-stroke", async ({ room, id, page, meta, points } = {}) => {
-    if (!requireHost(socket, room)) return;
+    if (!canDraw(socket, room)) return;
     const state = await getRoomState(room);
     if (!state) return;
 
-    const stroke = applyStrokeChunk(state.board.objects, { id, page, meta, points });
+    const by = isHost(socket, room) ? undefined : participantKey(socket);
+    const stroke = applyStrokeChunk(state.board.objects, { id, page, meta, points }, { by });
     if (!stroke) return;
 
     markDirty(state);
-    socket.to(room).emit("board-stroke", { id, page: stroke.page, meta, points });
+    socket.to(room).emit("board-stroke", { id, page: stroke.page, meta: meta && by ? { ...meta, by } : meta, points });
   });
 
   // Transient previews are relayed only; they are never added to room state or persisted.
   socket.on("board-preview", ({ room, id, page, obj, active } = {}) => {
-    if (!requireHost(socket, room) || typeof id !== "string" || id.length > 48
+    if (!canDraw(socket, room) || typeof id !== "string" || id.length > 48
       || !Number.isInteger(page) || page < 0 || page > 499) return;
     if (active !== false) {
       if (!obj || obj.id !== id || obj.page !== page || !validateObject(obj, BOARD_OBJECT_TYPES)) return;

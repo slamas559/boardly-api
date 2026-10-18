@@ -3,6 +3,8 @@
 import { createClient } from '@deepgram/sdk';
 import fetch from 'cross-fetch';
 import 'dotenv/config';
+import { requireHost, isHost, canSpeak, participantKey } from './permissions.js';
+import { closeVoiceRoom, createVoiceToken, livekitUrl, voiceConfigured } from './livekit.js';
 
 // Initialize Deepgram client
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
@@ -11,30 +13,68 @@ const deepgram = createClient(DEEPGRAM_API_KEY);
 // Store active transcription connections
 const activeTranscriptions = new Map(); // roomId -> { connection, tutorSocketId }
 
-// Store active voice broadcasts by room
+// Active voice broadcasts: roomId -> socket id of the host who started it
 const activeBroadcasts = new Map();
 
+export const isBroadcasting = (roomId) => activeBroadcasts.has(String(roomId));
+
+function endBroadcast(io, roomId, reason) {
+  activeBroadcasts.delete(roomId);
+  const transcription = activeTranscriptions.get(roomId);
+  if (transcription?.connection) {
+    try { transcription.connection.finish(); } catch (error) { console.error("Error finishing transcription:", error); }
+    activeTranscriptions.delete(roomId);
+    io.to(roomId).emit('transcription-stopped', { roomId });
+  }
+  io.to(roomId).emit('voice-broadcast-ended', reason ? { roomId, reason } : { roomId });
+  closeVoiceRoom(roomId).catch(() => {});
+}
+
 export default function voiceEvents(socket, io) {
-  
-  // Handle voice broadcast started by tutor
-  socket.on('voice-broadcast-started', (data) => {
-    const { roomId } = data;
-    console.log(`Voice broadcast started by tutor in room: ${roomId}`);
-    
-    activeBroadcasts.set(roomId, {
-      tutorSocketId: socket.id,
-      isActive: true
-    });
-    
-    socket.to(roomId).emit('voice-broadcast-started', {
-      roomId,
-      tutorSocketId: socket.id
-    });
+
+  // The host starts the room's voice session; listeners are told so they can join it
+  socket.on('voice-broadcast-started', ({ roomId } = {}) => {
+    if (!requireHost(socket, roomId)) return;
+    activeBroadcasts.set(roomId, socket.id);
+    socket.to(roomId).emit('voice-broadcast-started', { roomId });
   });
-  
+
+  // A listener who joins late (or reconnects) asks whether a session is already running
+  socket.on('request-broadcast-status', ({ roomId } = {}) => {
+    if (typeof roomId !== 'string' || !socket.rooms.has(roomId)) return;
+    if (activeBroadcasts.has(roomId) && activeBroadcasts.get(roomId) !== socket.id) {
+      socket.emit('voice-broadcast-started', { roomId });
+    }
+  });
+
+  // A pass for the voice session. Everyone can listen; only the host and listeners allowed to speak can publish.
+  socket.on('voice-token', async ({ roomId } = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    try {
+      if (typeof roomId !== 'string' || !socket.rooms.has(roomId)) return reply({ ok: false, error: 'Join the room first.' });
+      if (!voiceConfigured()) return reply({ ok: false, error: 'Voice is not set up on this server yet.' });
+      const host = isHost(socket, roomId);
+      if (!host && !activeBroadcasts.has(roomId)) return reply({ ok: false, error: 'No voice session is running.' });
+      const speak = canSpeak(socket, roomId);
+      const token = await createVoiceToken({
+        roomId,
+        identity: socket.id,
+        name: socket.data.displayName || 'Guest',
+        key: participantKey(socket),
+        host,
+        canSpeak: speak,
+      });
+      reply({ ok: true, url: livekitUrl(), token, canSpeak: speak });
+    } catch (error) {
+      console.error('voice-token error:', error.message);
+      reply({ ok: false, error: 'Could not start voice.' });
+    }
+  });
+
   // Handle transcription start request from tutor
   socket.on('start-transcription', async (data) => {
-    const { roomId } = data;
+    const { roomId } = data || {};
+    if (!requireHost(socket, roomId)) return;
     // console.log(`Starting transcription for room: ${roomId}`);
     
     try {
@@ -128,7 +168,8 @@ export default function voiceEvents(socket, io) {
 
   // Handle audio data from tutor's microphone
   socket.on('audio-data', (data) => {
-    const { roomId, audioData } = data;
+    const { roomId, audioData } = data || {};
+    if (!requireHost(socket, roomId)) return;
     
     const transcription = activeTranscriptions.get(roomId);
     
@@ -155,7 +196,8 @@ export default function voiceEvents(socket, io) {
 
   // Handle transcription stop request
   socket.on('stop-transcription', (data) => {
-    const { roomId } = data;
+    const { roomId } = data || {};
+    if (!requireHost(socket, roomId)) return;
     // console.log(`Stopping transcription for room: ${roomId}`);
     
     const transcription = activeTranscriptions.get(roomId);
@@ -174,7 +216,8 @@ export default function voiceEvents(socket, io) {
 
   // Handle subtitle settings update
   socket.on('subtitle-settings-update', (data) => {
-    const { roomId, settings } = data;
+    const { roomId, settings } = data || {};
+    if (!requireHost(socket, roomId)) return;
     console.log(`Subtitle settings updated in room ${roomId}`);
     
     socket.to(roomId).emit('subtitle-settings-updated', { settings });
@@ -182,173 +225,33 @@ export default function voiceEvents(socket, io) {
 
   // Clear subtitles for all students
   socket.on('clear-subtitles', (data) => {
-    const { roomId } = data;
+    const { roomId } = data || {};
+    if (!requireHost(socket, roomId)) return;
     console.log(`Clearing subtitles in room ${roomId}`);
     
     socket.to(roomId).emit('subtitles-cleared', { roomId });
   });
 
-  // === EXISTING VOICE BROADCAST CODE ===
-  
-  socket.on('voice-offer', (data) => {
-    const { roomId, offer, targetStudentId } = data;
-    console.log(`Voice offer from tutor in room: ${roomId}`, targetStudentId ? `for student: ${targetStudentId}` : 'for all students');
-    
-    if (targetStudentId) {
-      const studentSocket = io.sockets.sockets.get(targetStudentId);
-      if (studentSocket) {
-        studentSocket.emit('voice-offer', {
-          roomId,
-          offer,
-          tutorSocketId: socket.id
-        });
-        console.log(`Sent targeted offer to student: ${targetStudentId}`);
-      }
-    } else {
-      socket.to(roomId).emit('voice-offer', {
-        roomId,
-        offer,
-        tutorSocketId: socket.id
-      });
-    }
-  });
-
-  socket.on('student-join-broadcast', (data) => {
-    const { roomId, studentSocketId } = data;
-    console.log(`Student ${studentSocketId} requesting to join broadcast in room: ${roomId}`);
-    
-    const activeBroadcast = activeBroadcasts.get(roomId);
-    if (activeBroadcast && activeBroadcast.isActive) {
-      const tutorSocket = io.sockets.sockets.get(activeBroadcast.tutorSocketId);
-      if (tutorSocket) {
-        tutorSocket.emit('student-join-broadcast', {
-          roomId,
-          studentSocketId
-        });
-        console.log(`Notified tutor to create connection for student: ${studentSocketId}`);
-      }
-    }
-  });
-
-  socket.on('request-broadcast-status', (data) => {
-    const { roomId, studentSocketId } = data;
-    console.log(`Student ${studentSocketId} requesting broadcast status for room: ${roomId}`);
-    
-    const activeBroadcast = activeBroadcasts.get(roomId);
-    if (activeBroadcast && activeBroadcast.isActive && activeBroadcast.tutorSocketId !== socket.id) {
-      console.log(`Active broadcast found, connecting student ${studentSocketId}`);
-      
-      const tutorSocket = io.sockets.sockets.get(activeBroadcast.tutorSocketId);
-      if (tutorSocket) {
-        tutorSocket.emit('student-join-broadcast', {
-          roomId,
-          studentSocketId
-        });
-      }
-    } else {
-      console.log(`No active broadcast found for room: ${roomId}`);
-    }
-  });
-
-  socket.on('voice-answer', (data) => {
-    const { roomId, answer, socketId } = data;
-    console.log(`Voice answer from student ${socketId} in room: ${roomId}`);
-    
-    const activeBroadcast = activeBroadcasts.get(roomId);
-    if (activeBroadcast) {
-      const tutorSocket = io.sockets.sockets.get(activeBroadcast.tutorSocketId);
-      if (tutorSocket) {
-        tutorSocket.emit('voice-answer', {
-          roomId,
-          answer,
-          studentSocketId: socketId
-        });
-        console.log(`Forwarded answer from student ${socketId} to tutor`);
-      } else {
-        console.error(`Tutor socket not found: ${activeBroadcast.tutorSocketId}`);
-      }
-    } else {
-      console.error(`No active broadcast found for room: ${roomId}`);
-    }
-  });
-
-  socket.on('voice-ice-candidate', (data) => {
-    const { roomId, candidate } = data;
-    
-    socket.to(roomId).emit('voice-ice-candidate', {
-      roomId,
-      candidate,
-      fromSocketId: socket.id
-    });
-  });
-
-  socket.on('voice-broadcast-ended', (data) => {
-    const { roomId } = data;
-    console.log(`Voice broadcast ended in room: ${roomId}`);
-    
-    // Stop transcription if active
-    const transcription = activeTranscriptions.get(roomId);
-    if (transcription && transcription.connection) {
-      try {
-        transcription.connection.finish();
-      } catch (error) {
-        console.error(`Error finishing transcription on broadcast end:`, error);
-      }
-      activeTranscriptions.delete(roomId);
-    }
-    
-    const activeBroadcast = activeBroadcasts.get(roomId);
-    if (activeBroadcast) {
-      activeBroadcast.isActive = false;
-      setTimeout(() => {
-        activeBroadcasts.delete(roomId);
-      }, 5000);
-    }
-    
-    socket.to(roomId).emit('voice-broadcast-ended', { roomId });
+  socket.on('voice-broadcast-ended', ({ roomId } = {}) => {
+    if (!requireHost(socket, roomId)) return;
+    endBroadcast(io, roomId);
   });
 
   socket.on('disconnect', () => {
-    console.log(`Socket ${socket.id} disconnected`);
-    
-    // Clean up transcriptions
+    // The host leaving ends transcription and the voice session
     activeTranscriptions.forEach((transcription, roomId) => {
       if (transcription.tutorSocketId === socket.id) {
         try {
           transcription.connection.finish();
         } catch (error) {
-          console.error(`Error finishing transcription on disconnect:`, error);
+          console.error('Error finishing transcription on disconnect:', error);
         }
         activeTranscriptions.delete(roomId);
         io.to(roomId).emit('transcription-stopped', { roomId });
       }
     });
-    
-    // Clean up broadcasts
-    activeBroadcasts.forEach((broadcast, roomId) => {
-      if (broadcast.tutorSocketId === socket.id && broadcast.isActive) {
-        broadcast.isActive = false;
-        io.to(roomId).emit('voice-broadcast-ended', {
-          roomId,
-          reason: 'tutor_disconnected'
-        });
-        console.log(`Ended broadcast in room ${roomId} due to tutor disconnection`);
-        
-        setTimeout(() => {
-          activeBroadcasts.delete(roomId);
-        }, 5000);
-      }
-    });
-  });
-
-  socket.on('voice-connection-quality', (data) => {
-    const { roomId, quality, socketId } = data;
-    console.log(`Voice quality report from ${socketId} in room ${roomId}:`, quality);
-    
-    socket.to(roomId).emit('voice-quality-update', {
-      roomId,
-      quality,
-      fromSocketId: socketId
+    activeBroadcasts.forEach((hostSocketId, roomId) => {
+      if (hostSocketId === socket.id) endBroadcast(io, roomId, 'tutor_disconnected');
     });
   });
 }

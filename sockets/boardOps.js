@@ -341,16 +341,48 @@ export function applyOps(objects, ops, { allowedTypes = OBJECT_TYPES } = {}) {
   return applied;
 }
 
+// A listener the host has let draw may add ordinary drawing objects, but not page paper, reveal covers or uploads
+const GUEST_BLOCKED_TYPES = new Set(["paper", "cover", "media"]);
+
+/**
+ * Reduce a listener's ops to what they are allowed to do: add objects (stamped with who made them), and
+ * change or remove only objects they made themselves. Clearing a page is for the host.
+ */
+export function limitGuestOps(objects, ops, key) {
+  const allowed = [];
+  if (!Array.isArray(ops)) return allowed;
+  for (const op of ops.slice(0, 500)) {
+    if (!op || typeof op !== "object") continue;
+    if (op.op === "add") {
+      const obj = op.obj;
+      if (!obj || typeof obj !== "object" || GUEST_BLOCKED_TYPES.has(obj.type)) continue;
+      const existing = typeof obj.id === "string" ? objects.get(obj.id) : null;
+      if (existing && existing.by !== key) continue; // never overwrite someone else's object
+      allowed.push({ op: "add", obj: { ...obj, by: key } });
+    } else if (op.op === "update") {
+      const existing = typeof op.id === "string" ? objects.get(op.id) : null;
+      if (!existing || existing.by !== key || !op.patch || typeof op.patch !== "object") continue;
+      const { by, ...patch } = op.patch; // the author of an object cannot be changed
+      allowed.push({ op: "update", id: op.id, patch });
+    } else if (op.op === "remove") {
+      const existing = typeof op.id === "string" ? objects.get(op.id) : null;
+      if (existing && existing.by === key) allowed.push({ op: "remove", id: op.id });
+    }
+  }
+  return allowed;
+}
+
 /**
  * Streaming freehand strokes: the first message carries `meta` (style), later ones only points.
  * The stroke is created/extended immediately so the stored state is always consistent.
  * Returns the stroke object, or null when the message is rejected.
  */
-export function applyStrokeChunk(objects, { id, page, meta, points }) {
+export function applyStrokeChunk(objects, { id, page, meta, points }, { by } = {}) {
   if (typeof id !== "string" || id.length === 0 || id.length > 48) return null;
   if (!Array.isArray(points) || points.length > 500) return null;
 
   let stroke = objects.get(id);
+  if (stroke && by !== undefined && stroke.by !== by) return null; // a listener can only extend their own stroke
   if (!stroke) {
     if (!meta || typeof meta !== "object") return null;
     if (objects.size >= LIMITS.maxObjects) return null;
@@ -365,6 +397,7 @@ export function applyStrokeChunk(objects, { id, page, meta, points }) {
       ...(isFiniteNum(meta.z) && meta.z !== 0 && Math.abs(meta.z) <= 1_000_000 ? { z: meta.z } : {}),
       texture: STROKE_TEXTURES.has(meta.texture) ? meta.texture : "smooth",
       pattern: STROKE_PATTERNS.has(meta.pattern) ? meta.pattern : "solid",
+      ...(by !== undefined ? { by } : {}),
       points: [],
     };
   }

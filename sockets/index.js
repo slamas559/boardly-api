@@ -10,7 +10,8 @@ import recordingEvents, { isRoomRecording } from "./recording.js";
 import Room from "../models/Room.js";
 import jwt from "jsonwebtoken";
 import { getRoomState, serializeState, releaseRoomState } from "./roomState.js";
-import { markHost } from "./permissions.js";
+import { markHost, participantKey, releaseAccess } from "./permissions.js";
+import accessEvents, { sendAccess } from "./access.js";
 
 const joinedRooms = new Map(); // socket.id -> roomId
 const roomUsers = new Map(); // roomId -> Set of user objects {socketId, userId, name, isTutor}
@@ -114,12 +115,13 @@ export default function socketManager(io) {
         if (isHost) markHost(socket, roomId);
 
         // Add user to room tracking (isTutor is server-verified, never client-claimed)
-        addUserToRoom(socket.id, roomId, { ...user, isTutor: isHost });
+        addUserToRoom(socket.id, roomId, { ...user, isTutor: isHost }, participantKey(socket));
         console.log(`Socket ${socket.id} (${user.name}) joined room ${roomId} as ${isHost ? "host" : "listener"}`);
 
         // Send the full live state so late joiners see exactly what everyone else sees
         if (state) {
-          socket.emit("room-state", { ...serializeState(state), isHost, isRecording: isRoomRecording(roomId) });
+          socket.emit("room-state", { ...serializeState(state), isHost, isRecording: isRoomRecording(roomId), participantKey: participantKey(socket) });
+          sendAccess(socket, roomId); // what the host has let listeners do
           socket.emit("change-view", state.view);
           sendActivityState(socket, roomId); // a question that is already running
         }
@@ -145,6 +147,7 @@ export default function socketManager(io) {
     qaEvents(socket, io);
     activityEvents(socket, io);
     recordingEvents(socket, io);
+    accessEvents(socket, io);
 
     socket.on("disconnect", () => {
       console.log("User disconnected:", socket.id);
@@ -168,7 +171,7 @@ export default function socketManager(io) {
 
 
 // Helper functions for room user management
-function addUserToRoom(socketId, roomId, user) {
+function addUserToRoom(socketId, roomId, user, key) {
   if (!roomUsers.has(roomId)) {
     roomUsers.set(roomId, new Set());
   }
@@ -176,6 +179,7 @@ function addUserToRoom(socketId, roomId, user) {
   const roomUserSet = roomUsers.get(roomId);
   roomUserSet.add({
     socketId,
+    key,
     userId: user.id,
     name: user.name,
     isTutor: user.isTutor
@@ -196,6 +200,7 @@ function removeUserFromRoom(socketId, roomId) {
     // Clean up empty room and persist its live state
     if (roomUserSet.size === 0) {
       roomUsers.delete(roomId);
+      releaseAccess(roomId);
       releaseActivity(roomId);
       releaseRoomState(roomId).catch((err) => console.error("Failed to release room state:", err.message));
     }
@@ -215,21 +220,25 @@ function checkUserInRoom(roomId, userId) {
   return users;
 }
 
+// Up to this many people, everyone sees the list of names; in a bigger room only the host receives it
+const OPEN_ROSTER_LIMIT = 50;
+const ROSTER_CAP = 2000;
+
 function getRoomStats(roomId) {
   const roomUserSet = roomUsers.get(roomId);
   if (!roomUserSet) {
-    return { totalUsers: 0, students: 0, tutors: 0 };
+    return { totalUsers: 0, students: 0, tutors: 0, userList: [] };
   }
 
   const users = Array.from(roomUserSet);
-  const students = users.filter(user => !user.isTutor);
-  const tutors = users.filter(user => user.isTutor);
+  const tutors = users.filter(user => user.isTutor).length;
 
   return {
     totalUsers: users.length,
-    students: students.length,
-    tutors: tutors.length,
-    userList: users.map(user => ({
+    students: users.length - tutors,
+    tutors,
+    userList: users.slice(0, ROSTER_CAP).map(user => ({
+      key: user.key,
       id: user.userId,
       name: user.name,
       isTutor: user.isTutor
@@ -237,10 +246,21 @@ function getRoomStats(roomId) {
   };
 }
 
+// Joins and leaves arrive in bursts in a big room, so the update goes out at most a few times a second
+const pendingStats = new Set();
 function broadcastRoomStats(io, roomId) {
-  const stats = getRoomStats(roomId);
-  io.to(roomId).emit("room-stats-update", stats);
-  // console.log(`Broadcasting stats for room ${roomId}:`, stats);
+  if (pendingStats.has(roomId)) return;
+  pendingStats.add(roomId);
+  setTimeout(() => {
+    pendingStats.delete(roomId);
+    const stats = getRoomStats(roomId);
+    const { userList, ...counts } = stats;
+    io.to(roomId).emit("room-stats-update", stats.totalUsers <= OPEN_ROSTER_LIMIT ? stats : counts);
+    // The host always gets the full list, which is what the permissions panel is built from
+    for (const user of roomUsers.get(roomId) || []) {
+      if (user.isTutor) io.to(user.socketId).emit("room-roster", { userList });
+    }
+  }, 400);
 }
 
 // Export helper functions for potential use in other modules
