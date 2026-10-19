@@ -10,7 +10,7 @@ export const OBJECT_TYPES = new Set([
   "highlight",  // legacy PDF highlight (percent rects) - kept so old data still loads
 ]);
 
-export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media", "equation", "paper", "aid", "instrument", "stats", "cover"]);
+export const BOARD_OBJECT_TYPES = new Set([...OBJECT_TYPES, "graph", "table", "media", "equation", "paper", "aid", "instrument", "stats", "solid", "cover"]);
 export const INSTRUMENT_KINDS = { ruler: [160, 1600], protractor: [160, 1200], square45: [120, 1000], square3060: [160, 1200] };
 export const PAPER_KINDS = new Set(["dots", "grid", "plane", "isometric", "lined", "blank"]);
 
@@ -34,6 +34,11 @@ export const LIMITS = {
   maxFractionParts: 24,
   maxStatsColumns: 4,
   maxStatsRows: 300,
+};
+
+// The sizes each 3D solid is made of; keep in step with the client's solids.js
+const SOLID_SIZES = {
+  cube: ["a"], cuboid: ["l", "w", "h"], sphere: ["r"], cylinder: ["r", "h"], cone: ["r", "h"], pyramid: ["a", "h"], prism: ["b", "t", "l"],
 };
 
 // Brush look of a freehand stroke (Pen / Marker); keep in step with the client's brushes.js
@@ -169,6 +174,24 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
     if (obj.open !== undefined && typeof obj.open !== "boolean") return false;
     if (obj.label !== undefined && obj.label !== null && (typeof obj.label !== "string" || obj.label.length > 30)) return false;
     if (obj.color !== undefined && (typeof obj.color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(obj.color))) return false;
+  }
+  if (obj.type === "solid") {
+    // A 3D solid: which one, its sizes, the viewing angle and how it is drawn
+    const keys = SOLID_SIZES[obj.kind];
+    if (!keys) return false;
+    if (![obj.x, obj.y].every(isFiniteNum) || Math.abs(obj.x) > 10_000_000 || Math.abs(obj.y) > 10_000_000) return false;
+    if (![obj.w, obj.h].every((n) => isFiniteNum(n) && n >= 200 && n <= 20000)) return false;
+    if (obj.color !== undefined && (typeof obj.color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(obj.color))) return false;
+    const sizes = obj.params;
+    if (!sizes || typeof sizes !== "object" || Array.isArray(sizes)) return false;
+    if (Object.keys(sizes).length !== keys.length || !keys.every((key) => isFiniteNum(sizes[key]) && sizes[key] >= 0.1 && sizes[key] <= 1000)) return false;
+    if (obj.azimuth !== undefined && !(isFiniteNum(obj.azimuth) && Math.abs(obj.azimuth) <= 3600)) return false;
+    if (obj.elevation !== undefined && !(isFiniteNum(obj.elevation) && Math.abs(obj.elevation) <= 360)) return false;
+    for (const flag of ["edges", "seeThrough", "labels", "measures"]) {
+      if (obj[flag] !== undefined && typeof obj[flag] !== "boolean") return false;
+    }
+    if (obj.unit !== undefined && obj.unit !== null && (typeof obj.unit !== "string" || obj.unit.length > 8)) return false;
+    if (obj.title !== undefined && obj.title !== null && (typeof obj.title !== "string" || obj.title.length > 60)) return false;
   }
   if (obj.type === "stats") {
     // A data chart: the numbers themselves plus a few display settings

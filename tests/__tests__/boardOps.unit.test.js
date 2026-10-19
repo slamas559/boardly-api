@@ -509,4 +509,37 @@ describe('boardOps', () => {
     expect(objects.get('z8').z).toBe(4);
     expect(applyOps(objects, [{ op: 'update', id: 'z8', patch: { z: 'x' } }])).toHaveLength(0);
   });
+  test('3D solids are validated: kind, sizes, view and display settings', () => {
+    const solid = (id, extra = {}) => ({
+      id, type: 'solid', page: 0, kind: 'cylinder', params: { r: 2.5, h: 6 }, x: 0, y: 0, w: 440, h: 460,
+      color: '#2540D9', azimuth: 38, elevation: 24, edges: true, seeThrough: false, labels: true, measures: true, title: null, unit: 'cm', ...extra,
+    });
+    expect(validateObject(solid('s1'), BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(solid('s2', { kind: 'cube', params: { a: 4 } }), BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(solid('s3', { kind: 'prism', params: { b: 4, t: 3, l: 6 } }), BOARD_OBJECT_TYPES)).toBe(true);
+
+    expect(validateObject(solid('b1', { kind: 'torus' }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b2', { params: { r: 2.5 } }), BOARD_OBJECT_TYPES)).toBe(false); // a size is missing
+    expect(validateObject(solid('b3', { params: { r: 2.5, h: 6, extra: 1 } }), BOARD_OBJECT_TYPES)).toBe(false); // a size too many
+    expect(validateObject(solid('b4', { params: { r: -1, h: 6 } }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b5', { params: { r: 2.5, h: 5000 } }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b6', { params: { r: 'big', h: 6 } }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b7', { w: 10 }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b8', { azimuth: Infinity }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b9', { edges: 'yes' }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b10', { unit: 'kilometres' }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b11', { title: 'x'.repeat(61) }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('b12', { color: 'blue' }), BOARD_OBJECT_TYPES)).toBe(false);
+  });
+
+  test('a solid can change kind and sizes in one update, but not into an invalid mix', () => {
+    const objects = new Map();
+    const base = { id: 'q', type: 'solid', page: 0, kind: 'cube', params: { a: 4 }, x: 0, y: 0, w: 440, h: 460 };
+    applyOps(objects, [{ op: 'add', obj: base }], { allowedTypes: BOARD_OBJECT_TYPES });
+    expect(applyOps(objects, [{ op: 'update', id: 'q', patch: { kind: 'cone', params: { r: 2, h: 5 } } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1);
+    expect(objects.get('q').kind).toBe('cone');
+    expect(applyOps(objects, [{ op: 'update', id: 'q', patch: { kind: 'cube' } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(0); // sizes no longer fit
+    expect(objects.get('q').kind).toBe('cone');
+    expect(applyOps(objects, [{ op: 'update', id: 'q', patch: { azimuth: 120, elevation: 60, seeThrough: true } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1);
+  });
 });
