@@ -542,4 +542,34 @@ describe('boardOps', () => {
     expect(objects.get('q').kind).toBe('cone');
     expect(applyOps(objects, [{ op: 'update', id: 'q', patch: { azimuth: 120, elevation: 60, seeThrough: true } }], { allowedTypes: BOARD_OBJECT_TYPES })).toHaveLength(1);
   });
+  test('shapes spun around an axis or given depth need a valid outline and their own sizes', () => {
+    const triangle = [[-1.9, -3], [1.9, -3], [0, 3]];
+    const solid = (id, extra = {}) => ({
+      id, type: 'solid', page: 0, kind: 'revolve', profile: triangle, axis: 'center', params: { sweep: 360 }, x: 0, y: 0, w: 440, h: 460, ...extra,
+    });
+    expect(validateObject(solid('r1'), BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(solid('r2', { params: { sweep: 90 } }), BOARD_OBJECT_TYPES)).toBe(true);
+    expect(validateObject(solid('e1', { kind: 'extrude', params: { depth: 3.6 } }), BOARD_OBJECT_TYPES)).toBe(true);
+
+    expect(validateObject(solid('x1', { params: { sweep: 5 } }), BOARD_OBJECT_TYPES)).toBe(false); // below the smallest sweep
+    expect(validateObject(solid('x2', { params: { sweep: 361 } }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('x3', { params: { depth: 3 } }), BOARD_OBJECT_TYPES)).toBe(false); // the wrong size for this kind
+    expect(validateObject(solid('x4', { profile: undefined }), BOARD_OBJECT_TYPES)).toBe(false); // no outline
+    expect(validateObject(solid('x5', { profile: [[0, 0], [1, 1]] }), BOARD_OBJECT_TYPES)).toBe(false); // too few points
+    expect(validateObject(solid('x6', { profile: Array.from({ length: 161 }, (_, i) => [i, i]) }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('x7', { profile: [[0, 0], [1, 'a'], [2, 2]] }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('x8', { profile: [[0, 0], [1, 1], [1e9, 2]] }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject(solid('x9', { axis: 'top' }), BOARD_OBJECT_TYPES)).toBe(false);
+    expect(validateObject({ ...solid('p1'), kind: 'cube', params: { a: 4 }, profile: 'nope' }, BOARD_OBJECT_TYPES)).toBe(false);
+  });
+
+  test('a spun shape can switch to a stretched one in a single update', () => {
+    const objects = new Map();
+    const o = { id: 'k', type: 'solid', page: 0, kind: 'revolve', profile: [[-2, -2], [2, -2], [2, 2], [-2, 2]], axis: 'left', params: { sweep: 360 }, x: 0, y: 0, w: 440, h: 460 };
+    const opts = { allowedTypes: BOARD_OBJECT_TYPES };
+    applyOps(objects, [{ op: 'add', obj: o }], opts);
+    expect(applyOps(objects, [{ op: 'update', id: 'k', patch: { kind: 'extrude', params: { depth: 2.4 } } }], opts)).toHaveLength(1);
+    expect(applyOps(objects, [{ op: 'update', id: 'k', patch: { kind: 'revolve' } }], opts)).toHaveLength(0); // its sizes no longer fit
+    expect(applyOps(objects, [{ op: 'update', id: 'k', patch: { profile: [[-1, -1], [1, -1], [0, 1]] } }], opts)).toHaveLength(1);
+  });
 });

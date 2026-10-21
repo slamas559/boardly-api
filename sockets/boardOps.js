@@ -36,10 +36,19 @@ export const LIMITS = {
   maxStatsRows: 300,
 };
 
-// The sizes each 3D solid is made of; keep in step with the client's solids.js
+// The sizes each 3D solid is made of, with the range each may take; keep in step with the client's solids.js.
+// "revolve" and "extrude" are shapes drawn on the board and then spun around an axis or given depth.
+const SIZE = [0.1, 1000];
 const SOLID_SIZES = {
-  cube: ["a"], cuboid: ["l", "w", "h"], sphere: ["r"], cylinder: ["r", "h"], cone: ["r", "h"], pyramid: ["a", "h"], prism: ["b", "t", "l"],
+  cube: { a: SIZE }, cuboid: { l: SIZE, w: SIZE, h: SIZE }, sphere: { r: SIZE }, cylinder: { r: SIZE, h: SIZE },
+  cone: { r: SIZE, h: SIZE }, pyramid: { a: SIZE, h: SIZE }, prism: { b: SIZE, t: SIZE, l: SIZE },
+  revolve: { sweep: [10, 360] }, extrude: { depth: SIZE },
 };
+const SOLID_AXES = new Set(["left", "center", "right"]);
+
+// A drawn shape's outline: 3 to 160 points, each [x, y] in solid units
+const validProfile = (profile) => Array.isArray(profile) && profile.length >= 3 && profile.length <= 160
+  && profile.every((p) => Array.isArray(p) && p.length === 2 && p.every((n) => isFiniteNum(n) && Math.abs(n) <= 10000));
 
 // Brush look of a freehand stroke (Pen / Marker); keep in step with the client's brushes.js
 export const STROKE_TEXTURES = new Set(["smooth", "pencil", "chalk", "brush"]);
@@ -177,14 +186,18 @@ export function validateObject(obj, allowedTypes = OBJECT_TYPES) {
   }
   if (obj.type === "solid") {
     // A 3D solid: which one, its sizes, the viewing angle and how it is drawn
-    const keys = SOLID_SIZES[obj.kind];
-    if (!keys) return false;
+    const ranges = SOLID_SIZES[obj.kind];
+    if (!ranges) return false;
+    const keys = Object.keys(ranges);
+    if (obj.profile !== undefined && !validProfile(obj.profile)) return false;
+    if ((obj.kind === "revolve" || obj.kind === "extrude") && !validProfile(obj.profile)) return false;
+    if (obj.axis !== undefined && !SOLID_AXES.has(obj.axis)) return false;
     if (![obj.x, obj.y].every(isFiniteNum) || Math.abs(obj.x) > 10_000_000 || Math.abs(obj.y) > 10_000_000) return false;
     if (![obj.w, obj.h].every((n) => isFiniteNum(n) && n >= 200 && n <= 20000)) return false;
     if (obj.color !== undefined && (typeof obj.color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(obj.color))) return false;
     const sizes = obj.params;
     if (!sizes || typeof sizes !== "object" || Array.isArray(sizes)) return false;
-    if (Object.keys(sizes).length !== keys.length || !keys.every((key) => isFiniteNum(sizes[key]) && sizes[key] >= 0.1 && sizes[key] <= 1000)) return false;
+    if (Object.keys(sizes).length !== keys.length || !keys.every((key) => isFiniteNum(sizes[key]) && sizes[key] >= ranges[key][0] && sizes[key] <= ranges[key][1])) return false;
     if (obj.azimuth !== undefined && !(isFiniteNum(obj.azimuth) && Math.abs(obj.azimuth) <= 3600)) return false;
     if (obj.elevation !== undefined && !(isFiniteNum(obj.elevation) && Math.abs(obj.elevation) <= 360)) return false;
     for (const flag of ["edges", "seeThrough", "labels", "measures"]) {
